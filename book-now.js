@@ -46,8 +46,6 @@ function OrderSummaryUpdate() {
     $w('#totalprice').text =
         "$ " + totalPrice.toFixed(2);
 
-    // EXTRA SUMMARY
-
     if (extrasData.extras.length > 0) {
 
         const extraNames = extrasData.extras.map(
@@ -55,7 +53,7 @@ function OrderSummaryUpdate() {
         );
 
         $w('#extraaddition').text =
-            extraNames.join(' * ');
+            extraNames.join(', ');
 
         $w('#extraprice').text =
             "$ " + extrasData.totalExtras.toFixed(2);
@@ -77,8 +75,10 @@ function getExtras() {
     const boosterSeats = Number($w('#booster-seat').value) || 0;
     const water = Number($w('#drinkwater-input').value) || 0;
 
+    // Checkbox Groups
     const waiting = $w('#waitingcheckbox').value.length !== 0;
     const stop = $w('#stopcheckbox').value.length !== 0;
+    const pets = $w('#petscheckbox').value.length !== 0;
 
     const extras = [];
 
@@ -117,11 +117,11 @@ function getExtras() {
         });
     }
 
-    if ($w('#petscheckbox').value.length != 0) {
+    if (pets) {
         extras.push({
             name: 'I am travelling with pets × 1',
             price: 0
-        })
+        });
     }
 
     if (water > 0) {
@@ -201,28 +201,38 @@ $w('#passenger').onChange(() => {
     $w('#passengers').text = String(passenger);
 });
 
-function handleSeatChange(handlerName, handlerInput) {
+function handleQuantityChange(handlerName, handlerInput) {
 
     const input = $w(`#${handlerInput}`);
+
     let currentValue = Number(input.value) || 0;
 
-    if (handlerName.toLowerCase().includes('plus')) {
+    const isPlus = handlerName.toLowerCase().includes('plus');
+    const isMinus = handlerName.toLowerCase().includes('minus');
 
-        // Don't allow occupancy to exceed vehicle capacity
-        if (!canIncreaseOccupancy()) {
+    // Only these three inputs count toward vehicle capacity
+    const isSeat =
+        handlerInput === 'child-seat' ||
+        handlerInput === 'infant-seat' ||
+        handlerInput === 'booster-seat';
+
+    if (isPlus) {
+
+        // Capacity restriction ONLY for seats
+        if (isSeat && !canIncreaseOccupancy()) {
             return;
         }
 
         currentValue++;
 
-    } else if (handlerName.toLowerCase().includes('minus')) {
+    } else if (isMinus) {
 
-        // Don't allow negative values
         currentValue = Math.max(0, currentValue - 1);
     }
 
     input.value = String(currentValue);
-    // Update price + extras summary
+
+    // Recalculate summary and price
     OrderSummaryUpdate();
 }
 
@@ -240,27 +250,27 @@ function getOccupancy() {
 }
 
 $w('#childSeatplus').onClick(() => {
-    handleSeatChange('childSeatplus', 'child-seat');
+    handleQuantityChange('childSeatplus', 'child-seat');
 });
 
 $w('#childSeatminus').onClick(() => {
-    handleSeatChange('childSeatminus', 'child-seat');
+    handleQuantityChange('childSeatminus', 'child-seat');
 });
 
 $w('#infantplus').onClick(() => {
-    handleSeatChange('infantplus', 'infant-seat');
+    handleQuantityChange('infantplus', 'infant-seat');
 });
 
 $w('#infantminus').onClick(() => {
-    handleSeatChange('infantminus', 'infant-seat');
+    handleQuantityChange('infantminus', 'infant-seat');
 });
 
 $w('#boosterplus').onClick(() => {
-    handleSeatChange('boosterplus', 'booster-seat');
+    handleQuantityChange('boosterplus', 'booster-seat');
 });
 
 $w('#boosterminus').onClick(() => {
-    handleSeatChange('boosterminus', 'booster-seat');
+    handleQuantityChange('boosterminus', 'booster-seat');
 });
 
 $w('#waitingcheckbox').onChange((event) => {
@@ -269,11 +279,11 @@ $w('#waitingcheckbox').onChange((event) => {
 })
 
 $w('#drinkingwaterplus').onClick((event) => {
-    handleSeatChange('drinkingwaterplus', 'drinkwater-input');
+    handleQuantityChange('drinkingwaterplus', 'drinkwater-input');
 })
 
 $w('#drinkingwaterminus').onClick((event) => {
-    handleSeatChange('drinkingwaterminus', 'drinkwater-input');
+    handleQuantityChange('drinkingwaterminus', 'drinkwater-input');
 
 })
 
