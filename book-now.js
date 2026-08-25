@@ -1,6 +1,8 @@
 import { session } from "wix-storage-frontend"
 import wixLocationFrontend from "wix-location-frontend"
 import { formatDate, formatTime } from 'public/universal.js'
+import wixPayFrontend from "wix-pay-frontend";
+
 let PICKUP, DESTINATION, PASSENGERS, DATE, ARRIVALTIME, VEHICLENAME, VEHICLECAPACITY, BASEPRICE, TOTALPRICE
 const CHILD_SEAT_PRICE = 10;
 const INFANT_SEAT_PRICE = 10;
@@ -290,3 +292,147 @@ $w('#drinkingwaterminus').onClick((event) => {
 $w('#petscheckbox').onChange((event) => {
     OrderSummaryUpdate()
 })
+
+$w('#Continue').onClick(() => {
+
+    // ==========================================
+    // 1. GET REQUIRED CUSTOMER INFORMATION
+    // ==========================================
+
+    const name = $w('#name').value.trim();
+    const email = $w('#email').value.trim();
+    const phone = $w('#phoneNumber').value.trim();
+
+    // ==========================================
+    // 2. VALIDATE REQUIRED FIELDS
+    // ==========================================
+
+    if (!name) {
+        $w('#name').scrollTo();
+        return;
+    }
+
+    if (!email) {
+        $w('#email').scrollTo();
+        return;
+    }
+
+    // Validate email format
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailPattern.test(email)) {
+        $w('#email').scrollTo();
+        return;
+    }
+
+    if (!phone) {
+        $w('#phoneNumber').scrollTo();
+        return;
+    }
+
+    // ==========================================
+    // 3. GET EXTRAS
+    // ==========================================
+
+    const extrasData = getExtras();
+
+    // ==========================================
+    // 4. CALCULATE FINAL PRICE
+    // ==========================================
+
+    const totalPrice =
+        Number(BASEPRICE) + extrasData.totalExtras;
+
+    // ==========================================
+    // 5. CREATE BOOKING OBJECT
+    // ==========================================
+
+    const bookingObj = {
+
+        flightNumber: $w('#flightNumber').value,
+
+        pickup: PICKUP,
+
+        destination: DESTINATION,
+
+        arrivaldate: DATE,
+
+        arrivaltime: ARRIVALTIME,
+
+        destinationAddresshotel: $w('#destinationAddress').value,
+
+        nameSurname: name,
+
+        email: email,
+
+        phone: phone,
+
+        passenger: Number($w('#passenger').value) || 0,
+
+        childSeat: $w('#childSeat').value.length !== 0,
+
+        seat: Number($w('#child-seat').value) || 0,
+
+        infantSeat: Number($w('#infant-seat').value) || 0,
+
+        boosterSeat: Number($w('#booster-seat').value) || 0,
+
+        waitingcheckbox: $w('#waitingcheckbox').value.length !== 0,
+
+        drinkingwater: Number($w('#drinkwater-input').value) || 0,
+
+        stopcheckbox: $w('#stopcheckbox').value.length !== 0,
+
+        stopLocation: $w('#stoplocation').value,
+
+        petscheckbox: $w('#petscheckbox').value.length !== 0,
+
+        comments: $w('#Comments').value,
+
+        promoCode: $w('#promoCode').value,
+
+        BASEPRICE: Number(BASEPRICE),
+
+        TOTALPRICE: totalPrice,
+
+        extrasData: extrasData
+    };
+
+    // ==========================================
+    // 6. SAVE COMPLETE BOOKING TO SESSION
+    // ==========================================
+
+    session.setItem(
+        "Booking",
+        JSON.stringify(bookingObj)
+    );
+
+    // ==========================================
+    // 7. MOVE TO PAYMENT STATE
+    // ==========================================
+
+    $w('#statebox8').changeState("PaymentSelection");
+	$w('#byCard').scrollTo()
+
+});
+
+$w('#byCard').onChange((event) => {
+    if($w('#byCard').checked){
+		// 
+		$w('#box14').style.borderColor="#1E1E1E"
+		$w('#box14').style.borderWidth='1px'
+	}  
+	else{
+		$w('#box14').style.borderColor="#FFFFFF"
+		$w('#box14').style.borderWidth='1px'
+	}  
+})
+
+$w('#paymentBtn').onClick((event) => {
+        
+})
+
+$w('#editTransfer').onClick((event) => {
+    $w('#statebox8').changeState("BookingForm")    
+})
+
