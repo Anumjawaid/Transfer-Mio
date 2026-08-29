@@ -1,6 +1,6 @@
 import { session } from "wix-storage-frontend"
 import wixLocationFrontend from "wix-location-frontend"
-import { LoadPickups, LoadDestinations } from 'backend/handler_drop.web.js'
+import { LoadPickups, LoadDestinations,LoadPrices } from 'backend/handler_drop.web.js'
 import { formatDate } from 'public/universal.js'
 
 let PICKUP, DESTINATION, PASSENGERS, DATE
@@ -12,6 +12,7 @@ $w.onReady(async function () {
     DESTINATION = session.getItem("Destination")
     DATE = session.getItem("Date")
     PASSENGERS = session.getItem("Passengers")
+
     setTimeout(() => {
         $w('#statebox8').show()
     }, 1000);
@@ -58,16 +59,20 @@ $item('#Continue').onClick(() => {
     selectedIndex = index;
 
     // Update every repeater item
-    $w('#VEHICLES').forEachItem(($repeaterItem, repeaterItemData, repeaterItemIndex) => {
+    $w('#VEHICLES').forEachItem(async($repeaterItem, repeaterItemData, repeaterItemIndex) => {
 
         if (repeaterItemIndex === selectedIndex) {
             // Selected item
             $repeaterItem('#box10').style.borderWidth = '1px';
             $repeaterItem('#box10').style.borderColor = '#6E0404';
+            // GETPRICE IN HERE 
+            let price=await LoadPrices(PICKUP,DESTINATION,$item("#vehicleName").text)
+            console.log(price,"[price]")
+             session.setItem("BASEPRICE",price)
         } else {
             // All other items
-            $repeaterItem('#box10').style.borderWidth = '0px';
-            $repeaterItem('#box10').style.borderColor = '';
+            $repeaterItem('#box10').style.borderWidth = '1px';
+            $repeaterItem('#box10').style.borderColor = '#F2FAF9';
         }
 
     });
@@ -76,6 +81,7 @@ $item('#Continue').onClick(() => {
     session.setItem("Vehicle", $item("#vehicleName").text);
     session.setItem("Capacity", String($item("#vehiclecapacity").text));
     session.setItem("VehicleImage", String($item("#vehicleImage").src));
+   
 
     wixLocationFrontend.to("/book-now");
 });
