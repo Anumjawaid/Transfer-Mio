@@ -1,4 +1,4 @@
-import { LoadPickups, LoadCityPrice, LoadfromDestination, LoadDestinations } from 'backend/handler_drop.web.js'
+import { LoadPickups, LoadPrices, LoadfromDestination, LoadDestinations } from 'backend/handler_drop.web.js'
 import { session } from "wix-storage-frontend"
 import wixLocationFrontend from 'wix-location-frontend';
 
@@ -22,13 +22,13 @@ $w.onReady(async function () {
 $w('#state2change').onClick((event) => {
     $w('#statebox8').changeState("State1")
     Route = "AirportToCity"
-   
+
 })
 
 $w('#statechange1').onClick((event) => {
     $w('#statebox8').changeState("State2")
     Route = "CityToAirport"
-   
+
 })
 
 // $w('#airport1').onChange(async (event) => {
@@ -123,59 +123,64 @@ $w('#statechange1').onClick((event) => {
 //     }
 // })
 
-$w('#bookNow').onClick((event) => {
-            // Disable button immediately to prevent multiple clicks
-        $w('#bookNow').disable();
+$w('#bookNow').onClick(async (event) => {
+    // Disable button immediately to prevent multiple clicks
+    $w('#bookNow').disable();
 
-        // Get values
-        const pickup = $w('#pickup1').value;
-        const destination = $w('#destination1').value;
+    // Get values
+    const pickup = $w('#pickup1').value;
+    const destination = $w('#destination1').value;
 
-        // Clear previous exception
-        $w('#exception').text = '';
-        $w('#exception').hide();
+    // Clear previous exception
+    $w('#exception').text = '';
+    $w('#exception').hide();
 
-        // Validate required fields
-        if (!pickup || !destination) {
-            $w('#exception').text = 'Please fill required fields to proceed.';
-            $w('#exception').show();
+    // Validate required fields
+    if (!pickup || !destination) {
+        $w('#exception').text = 'Please fill required fields to proceed.';
+        $w('#exception').show();
 
-            // Re-enable button because operation stopped
-            $w('#bookNow').enable();
-            return;
-        }
+        // Re-enable button because operation stopped
+        $w('#bookNow').enable();
+        return;
+    }
 
-        try {
-            // Your operation/navigation
-            session.setItem("Pickup",pickup)
-            session.setItem("Destination",destination)
-            session.setItem("Date",String($w('#datePicker1').value))
-            session.setItem("Passengers",$w('#passengers').value)
-             wixLocationFrontend.to('/route-vehicle');
+    try {
+        let rates = await LoadPrices(pickup, destination)
+        console.log(rates, "rates")
+        // Your operation/navigation
+        session.setItem("Pickup", pickup)
+        session.setItem("Destination", destination)
+        session.setItem("Date", String($w('#datePicker1').value))
+        session.setItem("Passengers", $w('#passengers').value)
 
-        } catch (error) {
-            console.error(error);
+        session.setItem("RatesWindow", JSON.stringify(rates))
 
-            $w('#exception').text = 'Something went wrong. Please try again.';
-            $w('#exception').show();
+        wixLocationFrontend.to('/route-vehicle');
 
-            // Re-enable if operation fails
-            $w('#bookNow').enable();
-        }
-        
+    } catch (error) {
+        console.error(error);
+
+        $w('#exception').text = 'Something went wrong. Please try again.';
+        $w('#exception').show();
+
+        // Re-enable if operation fails
+        $w('#bookNow').enable();
+    }
+
 })
 
 $w('#pickup1').onChange(async (event) => {
-      console.log($w('#pickup1').value, "Airport")
+    console.log($w('#pickup1').value, "Airport")
     let destinations = await LoadDestinations($w('#pickup1').value)
     console.log(destinations, "cityProce")
     if (destinations.length != 0) {
         // 
         $w('#destination1').options = destinations.map((v) => { return { label: v.destination, value: v.destination } })
     }
-        
+
 })
 
 $w('#destination1').onChange((event) => {
-        
+
 })
