@@ -2,8 +2,10 @@ import { session } from "wix-storage-frontend"
 import wixLocationFrontend from "wix-location-frontend"
 import { formatDate, formatTime } from 'public/universal.js'
 import wixPayFrontend from "wix-pay-frontend";
+import { SaveBooking } from 'backend/CMS_Bookings.web.js'
+import { PaymentInitiate } from 'backend/payment.web';
 
-let PICKUP, DESTINATION, PASSENGERS, DATE, ARRIVALTIME, VEHICLENAME, VEHICLECAPACITY, BASEPRICE, TOTALPRICE
+let PICKUP, DESTINATION, PASSENGERS, DATE, ARRIVALTIME, VEHICLENAME, VEHICLECAPACITY, BASEPRICE, TOTALPRICE, BOOKINGOBJ
 const CHILD_SEAT_PRICE = 10;
 const INFANT_SEAT_PRICE = 10;
 const BOOSTER_SEAT_PRICE = 5;
@@ -13,20 +15,208 @@ const WATER_PRICE = 3; // change this to your actual water price
 
 $w.onReady(function () {
 
-    PICKUP = session.getItem("Pickup")
-    DESTINATION = session.getItem("Destination")
-    DATE = session.getItem("Date")
-    PASSENGERS = session.getItem("Passengers")
-    VEHICLENAME = session.getItem("Vehicle")
-    VEHICLECAPACITY = session.getItem("Capacity")
-    BASEPRICE = Number(session.getItem("BASEPRICE"))
-    TOTALPRICE = BASEPRICE
+    PICKUP = session.getItem("Pickup");
+    DESTINATION = session.getItem("Destination");
+    DATE = session.getItem("Date");
+    PASSENGERS = session.getItem("Passengers");
+    VEHICLENAME = session.getItem("Vehicle");
+    VEHICLECAPACITY = Number(session.getItem("Capacity"));
+    BASEPRICE = Number(session.getItem("BASEPRICE"));
+    TOTALPRICE = BASEPRICE;
 
-    $w('#arrivaldate').value = new Date(DATE)
-    $w('#passenger').value = PASSENGERS
-    OrderSummaryUpdate()
+    // Check if an unfinished booking already exists
+    const savedBooking = session.getItem("Booking");
 
+    if (savedBooking) {
+
+        try {
+
+            BOOKINGOBJ = JSON.parse(savedBooking);
+
+            restoreBooking(BOOKINGOBJ);
+
+        } catch (error) {
+
+            console.error("Could not restore booking:", error);
+
+            initializeNewBooking();
+        }
+
+    } else {
+
+        initializeNewBooking();
+    }
+
+    OrderSummaryUpdate();
 });
+
+function initializeNewBooking() {
+
+    $w('#arrivaldate').value = new Date(DATE);
+
+    $w('#passenger').value = String(PASSENGERS);
+
+}
+
+function restoreBooking(booking) {
+
+    // =========================
+    // CUSTOMER INFORMATION
+    // =========================
+
+    $w('#name').value = booking.nameSurname || "";
+
+    $w('#email').value = booking.email || "";
+
+    $w('#phoneNumber').value = booking.phone || "";
+
+    // =========================
+    // BOOKING INFORMATION
+    // =========================
+
+    $w('#flightNumber').value =
+        booking.flightNumber || "";
+
+    $w('#destinationAddress').value =
+        booking.destinationAddresshotel || "";
+
+    $w('#Comments').value =
+        booking.comments || "";
+
+    $w('#promoCode').value =
+        booking.promoCode || "";
+
+    // =========================
+    // DATE
+    // =========================
+
+    if (booking.arrivaldate) {
+
+        $w('#arrivaldate').value =
+            new Date(booking.arrivaldate);
+
+    }
+
+    // =========================
+    // PASSENGERS
+    // =========================
+
+    $w('#passenger').value =
+        String(booking.passenger || 0);
+
+    PASSENGERS =
+        Number(booking.passenger) || 0;
+
+    // =========================
+    // ARRIVAL TIME
+    // =========================
+
+    if (booking.arrivaltime) {
+
+        ARRIVALTIME = booking.arrivaltime;
+
+        // Only do this if your #arrivalTime
+        // is a Time Picker input.
+        //
+        // $w('#arrivalTime').value = ...
+    }
+
+    // =========================
+    // CHILD SEAT
+    // =========================
+
+    $w('#child-seat').value =
+        String(booking.seat || 0);
+
+    // Restore child seat checkbox group
+    if (booking.childSeat) {
+
+        // Replace "child-seat-option" with
+        // the actual value of your checkbox option
+        $w('#childSeat').value = ["child-seat-option"];
+
+        $w('#childseatselection').expand();
+
+    } else {
+
+        $w('#childSeat').value = [];
+
+        $w('#childseatselection').collapse();
+    }
+
+    // =========================
+    // INFANT
+    // =========================
+
+    $w('#infant-seat').value =
+        String(booking.infantSeat || 0);
+
+    // =========================
+    // BOOSTER
+    // =========================
+
+    $w('#booster-seat').value =
+        String(booking.boosterSeat || 0);
+
+    // =========================
+    // DRINKING WATER
+    // =========================
+
+    $w('#drinkwater-input').value =
+        String(booking.drinkingwater || 0);
+
+    // =========================
+    // WAITING
+    // =========================
+
+    if (booking.waitingcheckbox) {
+
+        // Replace with your actual checkbox-group option value
+        $w('#waitingcheckbox').value = ["waiting-option"];
+
+    } else {
+
+        $w('#waitingcheckbox').value = [];
+
+    }
+
+    // =========================
+    // STOP
+    // =========================
+
+    if (booking.stopcheckbox) {
+
+        // Replace with actual option value
+        $w('#stopcheckbox').value = ["stop-option"];
+
+        $w('#stopgroup').expand();
+
+    } else {
+
+        $w('#stopcheckbox').value = [];
+
+        $w('#stopgroup').collapse();
+
+    }
+
+    $w('#stoplocation').value =
+        booking.stopLocation || "";
+
+    // =========================
+    // PETS
+    // =========================
+
+    if (booking.petscheckbox) {
+
+        // Replace with actual option value
+        $w('#petscheckbox').value = ["pets-option"];
+
+    } else {
+
+        $w('#petscheckbox').value = [];
+
+    }
+}
 
 function OrderSummaryUpdate() {
 
@@ -51,7 +241,7 @@ function OrderSummaryUpdate() {
     if (extrasData.extras.length > 0) {
 
         const extraNames = extrasData.extras.map(
-            extra => extra.name
+            extra => `${extra.name} × ${extra.quantity}`
         );
 
         $w('#extraaddition').text =
@@ -77,7 +267,6 @@ function getExtras() {
     const boosterSeats = Number($w('#booster-seat').value) || 0;
     const water = Number($w('#drinkwater-input').value) || 0;
 
-    // Checkbox Groups
     const waiting = $w('#waitingcheckbox').value.length !== 0;
     const stop = $w('#stopcheckbox').value.length !== 0;
     const pets = $w('#petscheckbox').value.length !== 0;
@@ -86,55 +275,63 @@ function getExtras() {
 
     if (childSeats > 0) {
         extras.push({
-            name: `Child Seat × ${childSeats}`,
-            price: childSeats * CHILD_SEAT_PRICE
+            name: 'Child Seat',
+            quantity: childSeats,
+            price: CHILD_SEAT_PRICE
         });
     }
 
     if (infantSeats > 0) {
         extras.push({
-            name: `Infant Seat × ${infantSeats}`,
-            price: infantSeats * INFANT_SEAT_PRICE
+            name: 'Infant Seat',
+            quantity: infantSeats,
+            price: INFANT_SEAT_PRICE
         });
     }
 
     if (boosterSeats > 0) {
         extras.push({
-            name: `Booster × ${boosterSeats}`,
-            price: boosterSeats * BOOSTER_SEAT_PRICE
+            name: 'Booster',
+            quantity: boosterSeats,
+            price: BOOSTER_SEAT_PRICE
         });
     }
 
     if (waiting) {
         extras.push({
-            name: 'Extra hour of waiting × 1',
+            name: 'Extra hour of waiting',
+            quantity: 1,
             price: WAITING_PRICE
         });
     }
 
     if (stop) {
         extras.push({
-            name: 'Stop × 1',
+            name: 'Stop',
+            quantity: 1,
             price: STOP_PRICE
         });
     }
 
     if (pets) {
         extras.push({
-            name: 'I am travelling with pets × 1',
+            name: 'Travelling with pets',
+            quantity: 1,
             price: 0
         });
     }
 
     if (water > 0) {
         extras.push({
-            name: `Drinking Water × ${water}`,
-            price: water * WATER_PRICE
+            name: 'Drinking Water',
+            quantity: water,
+            price: WATER_PRICE
         });
     }
 
     const totalExtras = extras.reduce(
-        (total, extra) => total + extra.price,
+        (total, extra) =>
+        total + (extra.price * extra.quantity),
         0
     );
 
@@ -346,8 +543,7 @@ $w('#Continue').onClick(() => {
     // ==========================================
     // 5. CREATE BOOKING OBJECT
     // ==========================================
-
-    const bookingObj = {
+    BOOKINGOBJ = {
 
         flightNumber: $w('#flightNumber').value,
 
@@ -391,6 +587,8 @@ $w('#Continue').onClick(() => {
 
         promoCode: $w('#promoCode').value,
 
+        vehicleName: VEHICLENAME,
+
         BASEPRICE: Number(BASEPRICE),
 
         TOTALPRICE: totalPrice,
@@ -404,35 +602,126 @@ $w('#Continue').onClick(() => {
 
     session.setItem(
         "Booking",
-        JSON.stringify(bookingObj)
+        JSON.stringify(BOOKINGOBJ)
     );
 
     // ==========================================
     // 7. MOVE TO PAYMENT STATE
     // ==========================================
-
+    $w('#byCard').scrollTo()
     $w('#statebox8').changeState("PaymentSelection");
-	$w('#byCard').scrollTo()
 
 });
 
 $w('#byCard').onChange((event) => {
-    if($w('#byCard').checked){
-		// 
-		$w('#box14').style.borderColor="#1E1E1E"
-		$w('#box14').style.borderWidth='1px'
-	}  
-	else{
-		$w('#box14').style.borderColor="#FFFFFF"
-		$w('#box14').style.borderWidth='1px'
-	}  
+    if ($w('#byCard').checked) {
+        // 
+        $w('#box14').style.borderColor = "#1E1E1E"
+        $w('#box14').style.borderWidth = '1px'
+    } else {
+        $w('#box14').style.borderColor = "#FFFFFF"
+        $w('#box14').style.borderWidth = '1px'
+    }
 })
 
-$w('#paymentBtn').onClick((event) => {
-        
-})
+$w('#paymentBtn').onClick(async () => {
+
+    try {
+
+        // Get latest booking from session
+        const savedBooking = session.getItem("Booking");
+
+        if (!savedBooking) {
+
+            console.error("No booking found.");
+            return;
+        }
+
+        const bookingObj =
+            JSON.parse(savedBooking);
+
+        BOOKINGOBJ = bookingObj;
+
+        // =========================
+        // CREATE PAYMENT
+        // =========================
+
+        const payment =
+            await PaymentInitiate(bookingObj);
+
+        // =========================
+        // OPEN PAYMENT WINDOW
+        // =========================
+
+        const paymentResult =
+            await wixPayFrontend.startPayment(payment.id);
+
+        console.log(
+            "Payment result:",
+            paymentResult
+        );
+
+        // =========================
+        // CHECK PAYMENT STATUS
+        // =========================
+
+        if (paymentResult.status === "Successful") {
+
+            console.log("Payment successful");
+
+            // =========================
+            // SAVE BOOKING
+            // =========================
+
+            let save = await SaveBooking(bookingObj);
+            console.log(save, "save")
+            if (save.status != "Success") {
+                // show exception 
+                wixLocationFrontend.to("/thank-you")
+                return
+            }
+
+            // =========================
+            // REMOVE TEMPORARY SESSION
+            // =========================
+
+            // session.removeItem("Booking");
+
+            console.log(
+                "Booking successfully saved"
+            );
+
+        }
+        else if(paymentResult.status === "Cancelled"){
+            // 
+            let save = await SaveBooking(bookingObj);
+            console.log(save, "save")
+            if (save.status != "Success") {
+                // show exception 
+                wixLocationFrontend.to("/thank-you")
+                return
+            }
+            // goto thankyou page 
+        }
+         else {
+
+            console.log(
+                "Payment was not successful:",
+                paymentResult.status
+            );
+        }
+
+    } catch (error) {
+
+        console.error(
+            "Payment error:",
+            error
+        );
+
+    }
+
+});
 
 $w('#editTransfer').onClick((event) => {
-    $w('#statebox8').changeState("BookingForm")    
+    $w('#statebox8').changeState("BookingForm")
 })
-
