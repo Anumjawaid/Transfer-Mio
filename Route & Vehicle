@@ -1,0 +1,151 @@
+import { session } from "wix-storage-frontend"
+import wixLocationFrontend from "wix-location-frontend"
+import { LoadPickups, LoadDestinations,LoadPrices } from 'backend/handler_drop.web.js'
+import { formatDate } from 'public/universal.js'
+
+let PICKUP, DESTINATION, PASSENGERS, DATE
+let selectedIndex = -1;
+
+$w.onReady(async function () {
+
+    PICKUP = session.getItem("Pickup")
+    DESTINATION = session.getItem("Destination")
+    DATE = session.getItem("Date")
+    PASSENGERS = session.getItem("Passengers")
+
+    setTimeout(() => {
+        $w('#statebox8').show()
+    }, 1000);
+    let airports = await LoadPickups()
+    if (airports.length != 0) {
+        // 
+        const airportsloc = airports.map((v) => { return { label: v, value: v } })
+        $w('#pickup1').options = airportsloc
+        const Cities = await LoadDestinations()
+        if (Cities.length != []) {
+            $w('#destination1').options = Cities.map((v) => { return { label: v.destination, value: v.destination } })
+        }
+    }
+
+    $w('#pickup1').value = PICKUP
+    const Cities = await LoadDestinations(PICKUP)
+    if (Cities.length != []) {
+        $w('#destination1').options = Cities.map((v) => { return { label: v.destination, value: v.destination } })
+    }
+    $w('#destination1').value = DESTINATION
+    $w('#passengers').value = PASSENGERS
+
+    $w('#Pickuptxt').text = PICKUP
+    $w('#Destinationtxt').text = DESTINATION
+    $w('#datetxt').text = formatDate(DATE)
+    $w('#passengertxt').text = "" + PASSENGERS
+    setTimeout(() => {
+        changeMaintxt(PICKUP, DESTINATION)
+    }, 2000);
+
+});
+
+const changeMaintxt = (pickup, destination) => {
+    $w('#maintxt').text = "Taxi & Transfer from " + pickup + " To " + destination
+}
+
+$w('#VEHICLES').onItemReady(($item, itemData, index) => {
+// Initial state
+$item('#box10').style.borderWidth = '0px';
+
+$item('#Continue').onClick(() => {
+
+    // Set the newly selected index
+    selectedIndex = index;
+
+    // Update every repeater item
+    $w('#VEHICLES').forEachItem(async($repeaterItem, repeaterItemData, repeaterItemIndex) => {
+
+        if (repeaterItemIndex === selectedIndex) {
+            // Selected item
+            $repeaterItem('#box10').style.borderWidth = '1px';
+            $repeaterItem('#box10').style.borderColor = '#6E0404';
+            // GETPRICE IN HERE 
+            let price=await LoadPrices(PICKUP,DESTINATION,$item("#vehicleName").text)
+            console.log(price,"[price]")
+             session.setItem("BASEPRICE",price)
+        } else {
+            // All other items
+            $repeaterItem('#box10').style.borderWidth = '1px';
+            $repeaterItem('#box10').style.borderColor = '#F2FAF9';
+        }
+
+    });
+
+    // Save selected vehicle
+    session.setItem("Vehicle", $item("#vehicleName").text);
+    session.setItem("Capacity", String($item("#vehiclecapacity").text));
+    session.setItem("VehicleImage", String($item("#vehicleImage").src));
+   
+
+    wixLocationFrontend.to("/book-now");
+});
+});
+
+
+
+$w('#pickup1').onChange(async (event) => {
+    session.setItem("Pickup", $w('#pickup1').value)
+    PICKUP = $w('#pickup1').value
+    changeMaintxt(PICKUP, DESTINATION)
+    let destinations = await LoadDestinations($w('#pickup1').value)
+    console.log(destinations, "cityProce")
+    if (destinations.length != 0) {
+        // 
+        $w('#destination1').options = destinations.map((v) => { return { label: v.destination, value: v.destination } })
+    }
+})
+
+$w('#destination1').onChange((event) => {
+    session.setItem("Destination", $w('#destination1').value)
+    DESTINATION = $w('#destination1').value
+    changeMaintxt(PICKUP, DESTINATION)
+
+})
+
+$w('#datePicker1').onChange((event) => {
+    DATE = $w('#datePicker1').value
+    session.setItem("Date", String(DATE))
+    setSession()
+})
+
+$w('#passengers').onChange((event) => {
+    PASSENGERS = $w('#passengers').value
+    session.setItem("Passengers", PASSENGERS)
+    setSession()
+})
+
+$w('#stateChange').onClick((event) => {
+    if ($w('#statebox8').currentState.id == "Description") {
+        $w('#statebox8').changeState("Form")
+        return
+    }
+    $w('#statebox8').changeState("Description")
+
+})
+
+$w('#bookNow').onClick((event) => {
+    //  put everything in session and focus on repeater
+    setSession()
+    $w('#VEHICLES').scrollTo()
+})
+
+const setSession = () => {
+
+    session.setItem("Pickup", PICKUP)
+    session.setItem("Destination", DESTINATION)
+    session.setItem("Date", String(DATE))
+    session.setItem("Passengers", PASSENGERS)
+
+    $w('#Pickuptxt').text = PICKUP
+    $w('#Destinationtxt').text = DESTINATION
+    $w('#datetxt').text = formatDate(DATE)
+    $w('#passengertxt').text = "" + PASSENGERS
+    changeMaintxt(PICKUP, DESTINATION)
+
+}
