@@ -96,6 +96,11 @@ function restoreBooking(booking) {
             new Date(booking.arrivaldate);
 
     }
+    if (booking.arrivaltime) {
+        ARRIVALTIME=booking.arrivaltime
+        $w('#arrivalTime').value =ARRIVALTIME;
+
+    }
 
     // =========================
     // PASSENGERS
@@ -107,19 +112,7 @@ function restoreBooking(booking) {
     PASSENGERS =
         Number(booking.passenger) || 0;
 
-    // =========================
-    // ARRIVAL TIME
-    // =========================
-
-    if (booking.arrivaltime) {
-
-        ARRIVALTIME = booking.arrivaltime;
-
-        // Only do this if your #arrivalTime
-        // is a Time Picker input.
-        //
-        // $w('#arrivalTime').value = ...
-    }
+  
 
     // =========================
     // CHILD SEAT
@@ -133,7 +126,7 @@ function restoreBooking(booking) {
 
         // Replace "child-seat-option" with
         // the actual value of your checkbox option
-        $w('#childSeat').value = ["child-seat-option"];
+        $w('#childSeat').value = ['Child seats'];
 
         $w('#childseatselection').expand();
 
@@ -172,7 +165,7 @@ function restoreBooking(booking) {
     if (booking.waitingcheckbox) {
 
         // Replace with your actual checkbox-group option value
-        $w('#waitingcheckbox').value = ["waiting-option"];
+        $w('#waitingcheckbox').value = ["Extra hour of waiting"];
 
     } else {
 
@@ -187,7 +180,7 @@ function restoreBooking(booking) {
     if (booking.stopcheckbox) {
 
         // Replace with actual option value
-        $w('#stopcheckbox').value = ["stop-option"];
+        $w('#stopcheckbox').value = ["Stop on the way"];
 
         $w('#stopgroup').expand();
 
@@ -209,7 +202,7 @@ function restoreBooking(booking) {
     if (booking.petscheckbox) {
 
         // Replace with actual option value
-        $w('#petscheckbox').value = ["pets-option"];
+        $w('#petscheckbox').value = ["I am travelling with pets"];
 
     } else {
 
@@ -373,6 +366,7 @@ $w('#bookform').onViewportLeave((event) => {
 
 $w('#arrivalTime').onChange((event) => {
     $w('#arrivaltime').text = formatTime($w('#arrivalTime').value)
+    ARRIVALTIME=$w('#arrivalTime').value
 
 })
 
@@ -562,6 +556,9 @@ $w('#Continue').onClick(() => {
         email: email,
 
         phone: phone,
+        bookedBy:"CUSTOMER",
+        orderNumber:"TM"+ "", //4digit Random Number
+
 
         passenger: Number($w('#passenger').value) || 0,
 
@@ -695,9 +692,10 @@ $w('#paymentBtn').onClick(async () => {
         else if(paymentResult.status === "Cancelled"){
             // 
             let save = await SaveBooking(bookingObj);
-            console.log(save, "save")
-            if (save.status != "Success") {
+            console.log(save, "save from cancelled ")
+            if (save.status == "Success") {
                 // show exception 
+                console.log("in thank you")
                 wixLocationFrontend.to("/thank-you")
                 return
             }
