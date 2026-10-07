@@ -2,8 +2,9 @@ import { session } from "wix-storage-frontend"
 import wixLocationFrontend from "wix-location-frontend"
 import { formatDate, formatTime } from 'public/universal.js'
 import wixPayFrontend from "wix-pay-frontend";
-import { SaveBooking } from 'backend/CMS_Bookings.web.js'
+import { SaveBooking, GenerateUniqueOrderNumber, } from 'backend/CMS_Bookings.web.js'
 import { PaymentInitiate } from 'backend/payment.web';
+import { RegisterCustomer } from "backend/Members.web.js"
 
 let PICKUP, DESTINATION, PASSENGERS, DATE, ARRIVALTIME, VEHICLENAME, VEHICLECAPACITY, BASEPRICE, TOTALPRICE, BOOKINGOBJ
 const CHILD_SEAT_PRICE = 10;
@@ -97,8 +98,8 @@ function restoreBooking(booking) {
 
     }
     if (booking.arrivaltime) {
-        ARRIVALTIME=booking.arrivaltime
-        $w('#arrivalTime').value =ARRIVALTIME;
+        ARRIVALTIME = booking.arrivaltime
+        $w('#arrivalTime').value = ARRIVALTIME;
 
     }
 
@@ -111,8 +112,6 @@ function restoreBooking(booking) {
 
     PASSENGERS =
         Number(booking.passenger) || 0;
-
-  
 
     // =========================
     // CHILD SEAT
@@ -366,7 +365,7 @@ $w('#bookform').onViewportLeave((event) => {
 
 $w('#arrivalTime').onChange((event) => {
     $w('#arrivaltime').text = formatTime($w('#arrivalTime').value)
-    ARRIVALTIME=$w('#arrivalTime').value
+    ARRIVALTIME = $w('#arrivalTime').value
 
 })
 
@@ -484,7 +483,7 @@ $w('#petscheckbox').onChange((event) => {
     OrderSummaryUpdate()
 })
 
-$w('#Continue').onClick(() => {
+$w('#Continue').onClick(async () => {
 
     // ==========================================
     // 1. GET REQUIRED CUSTOMER INFORMATION
@@ -534,6 +533,22 @@ $w('#Continue').onClick(() => {
     const totalPrice =
         Number(BASEPRICE) + extrasData.totalExtras;
 
+    const orderResult =
+        await GenerateUniqueOrderNumber();
+
+    if (orderResult.status !== "Success") {
+
+        console.error(
+            "Could not generate order number:",
+            orderResult
+        );
+
+        return;
+    }
+
+    const orderNumber =
+        orderResult.orderNumber;
+
     // ==========================================
     // 5. CREATE BOOKING OBJECT
     // ==========================================
@@ -556,9 +571,8 @@ $w('#Continue').onClick(() => {
         email: email,
 
         phone: phone,
-        bookedBy:"CUSTOMER",
-        orderNumber:"TM"+ "", //4digit Random Number
-
+        bookedBy: "CUSTOMER",
+        orderNumber: orderNumber,
 
         passenger: Number($w('#passenger').value) || 0,
 
@@ -606,6 +620,7 @@ $w('#Continue').onClick(() => {
     // 7. MOVE TO PAYMENT STATE
     // ==========================================
     $w('#byCard').scrollTo()
+    $w('#button1').scrollTo()
     $w('#statebox8').changeState("PaymentSelection");
 
 });
@@ -688,20 +703,68 @@ $w('#paymentBtn').onClick(async () => {
                 "Booking successfully saved"
             );
 
-        }
-        else if(paymentResult.status === "Cancelled"){
-            // 
-            let save = await SaveBooking(bookingObj);
-            console.log(save, "save from cancelled ")
-            if (save.status == "Success") {
-                // show exception 
-                console.log("in thank you")
-                wixLocationFrontend.to("/thank-you")
-                return
-            }
+        } else if (paymentResult.status === "Cancelled") {
+           
+            console.log("Payment successful");
+
+    // Register customer
+    const registerResult = await RegisterCustomer({
+        email: bookingObj.email,
+        name: bookingObj.nameSurname
+    });
+
+    console.log(
+        "Customer registration:",
+        registerResult
+    );
+
+
+    if (registerResult.status === "Success") {
+
+        session.setItem(
+            "CustomerEmail",
+            registerResult.email
+        );
+
+        session.setItem(
+            "CustomerPassword",
+            registerResult.password
+        );
+
+        session.setItem(
+            "CustomerMemberId",
+            registerResult.memberId
+        );
+    }
+
+
+    // Save booking
+    const save = await SaveBooking(
+        bookingObj
+    );
+
+
+    if (save.status !== "Success") {
+
+        console.error(
+            "Booking could not be saved:",
+            save
+        );
+
+        return;
+    }
+
+
+    console.log(
+        "Booking successfully saved"
+    );
+
+    wixLocationFrontend.to(
+        "/thank-you"
+    );
+
             // goto thankyou page 
-        }
-         else {
+        } else {
 
             console.log(
                 "Payment was not successful:",
