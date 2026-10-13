@@ -786,3 +786,4 @@ $w('#paymentBtn').onClick(async () => {
 $w('#editTransfer').onClick((event) => {
     $w('#statebox8').changeState("BookingForm")
 })
+
