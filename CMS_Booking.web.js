@@ -639,3 +639,35 @@ export const GetAgentBookingsPage = webMethod(
         }
     }
 );
+
+export const UpdateBooking = webMethod(
+    Permissions.SiteMember,
+    async (obj) => {
+        try {
+            if (!obj?._id) {
+                return {
+                    status: "Failure-400",
+                    message: "Booking ID is required."
+                };
+            }
+
+            const result = await wixData.update(
+                DB_NAME,
+                obj
+            );
+
+            return {
+                status: "Success",
+                payload: result
+            };
+
+        } catch (error) {
+            console.error("UpdateBooking error:", error);
+
+            return {
+                status: "Failure-500",
+                message: error.message
+            };
+        }
+    }
+);
