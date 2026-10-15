@@ -1,21 +1,31 @@
 import { Permissions, webMethod } from "wix-web-module";
-import { triggeredEmails, contacts } from "wix-crm-backend"
+import { triggeredEmails, contacts } from "wix-crm-backend";
 
-const ACCOUNT_CREDENTIALS = "VU4oxFW"
-const BOOKING_ADMIN = "VU4lXTJ"
-const BOOKING_CLIENT = "VU4UpbI"
-const AGENT_ADMIN='VUnWDRP'
-const AGENT_EMAIL_APPLICATION='VUnYFUf'
-const AGENT_ACCOUNT_CREDENTIALS='VUnZX26'
+const ACCOUNT_CREDENTIALS = "VU4oxFW";
+const BOOKING_ADMIN = "VU4lXTJ";
+const BOOKING_CLIENT = "VU4UpbI";
+
+const AGENT_ADMIN = "VUnWDRP";
+const AGENT_EMAIL_APPLICATION = "VUnYFUf";
+const AGENT_ACCOUNT_CREDENTIALS = "VUnZX26";
+const REFUND_CLIENT_TEMPLATE = "VY84IZz";
+const REFUND_ADMIN_TEMPLATE = "VY80x7l";
+
+const ADMIN_EMAIL = "support@transfermio.com";
+
 const SITE_URL = "https://www.transfermio.com/";
 
-// ---------------------------------------------------------
-// Get / create contact
-// ---------------------------------------------------------
+// =========================================================
+// GET / CREATE CONTACT
+// =========================================================
 
 async function getContact(obj) {
+
     try {
-        const email = String(obj.Email || "").trim().toLowerCase();
+
+        const email = String(obj.Email || "")
+            .trim()
+            .toLowerCase();
 
         if (!email) {
             throw new Error("Email is required");
@@ -25,13 +35,15 @@ async function getContact(obj) {
         const result = await contacts.queryContacts()
             .eq("info.emails.email", email)
             .limit(1)
-            .find({ suppressAuth: true });
+            .find({
+                suppressAuth: true
+            });
 
         if (result.items.length > 0) {
             return result.items[0]._id;
         }
 
-        // Create contact if it doesn't exist
+        // Create contact
         const contact = await contacts.createContact({
             name: {
                 first: obj.name || ""
@@ -46,32 +58,52 @@ async function getContact(obj) {
         return contact._id;
 
     } catch (error) {
-        console.error("getContact error:", error);
+
+        console.error(
+            "getContact error:",
+            error
+        );
+
         throw error;
     }
 }
 
-// ---------------------------------------------------------
-// ACCOUNT CREDENTIALS EMAIL
-// ---------------------------------------------------------
+// =========================================================
+// ACCOUNT CREDENTIALS
+// Used by Customer + Agent registration
+// =========================================================
+
 export const sendAccountCredentials = webMethod(
     Permissions.Anyone,
     async (obj) => {
 
         try {
 
-            console.log("Sending account credentials:", obj);
+            console.log(
+                "Sending account credentials:",
+                obj
+            );
 
             const contactId = await getContact({
                 Email: obj.email,
-                Name: obj.name
+                name: obj.name
             });
 
             const options = {
                 variables: {
-                    name: String(obj.name || ""),
-                    email: String(obj.email || ""),
-                    password: String(obj.password || ""),
+
+                    name: String(
+                        obj.name || ""
+                    ),
+
+                    email: String(
+                        obj.email || ""
+                    ),
+
+                    password: String(
+                        obj.password || ""
+                    ),
+
                     SITE_URL: SITE_URL
                 }
             };
@@ -82,7 +114,9 @@ export const sendAccountCredentials = webMethod(
                 options
             );
 
-            console.log("Account credentials email sent");
+            console.log(
+                "Account credentials email sent"
+            );
 
             return {
                 status: "Success"
@@ -103,9 +137,10 @@ export const sendAccountCredentials = webMethod(
     }
 );
 
-// ---------------------------------------------------------
-// BOOKING EMAILS - ADMIN + CLIENT
-// ---------------------------------------------------------
+// =========================================================
+// BOOKING EMAILS
+// CLIENT + ADMIN
+// =========================================================
 
 export const sendBookingEmails = webMethod(
     Permissions.Anyone,
@@ -113,27 +148,55 @@ export const sendBookingEmails = webMethod(
 
         try {
 
-            console.log("Sending booking emails:", obj);
+            console.log(
+                "Sending booking emails:",
+                obj
+            );
 
             // -------------------------------------------------
-            // CLIENT EMAIL
+            // CLIENT BOOKING EMAIL
             // -------------------------------------------------
 
             const clientContactId = await getContact({
                 Email: obj.email,
-                Name: obj.Name
+                name: obj.Name
             });
 
             const clientOptions = {
                 variables: {
-                    Name: String(obj.Name || ""),
-                    orderNumber: String(obj.orderNumber || ""),
-                    Route: String(obj.Route || ""),
-                    DateTime: String(obj.DateTime || ""),
-                    Vehicle: String(obj.Vehicle || ""),
-                    Passenger: String(obj.Passenger || ""),
-                    Extras: String(obj.Extras || ""),
-                    totalPaid: String(obj.totalPaid || ""),
+
+                    Name: String(
+                        obj.Name || ""
+                    ),
+
+                    orderNumber: String(
+                        obj.orderNumber || ""
+                    ),
+
+                    Route: String(
+                        obj.Route || ""
+                    ),
+
+                    DateTime: String(
+                        obj.DateTime || ""
+                    ),
+
+                    Vehicle: String(
+                        obj.Vehicle || ""
+                    ),
+
+                    Passenger: String(
+                        obj.Passenger || ""
+                    ),
+
+                    Extras: String(
+                        obj.Extras || ""
+                    ),
+
+                    totalPaid: String(
+                        obj.totalPaid || ""
+                    ),
+
                     SITE_URL: SITE_URL
                 }
             };
@@ -144,30 +207,62 @@ export const sendBookingEmails = webMethod(
                 clientOptions
             );
 
-            console.log("Client booking email sent");
+            console.log(
+                "Client booking email sent"
+            );
 
             // -------------------------------------------------
-            // ADMIN EMAIL
+            // ADMIN BOOKING EMAIL
             // -------------------------------------------------
 
-            const adminEmail = "support@transfermio.com";
+            const adminEmail =
+                "support@transfermio.com";
 
-            const adminContactId = await getContact({
-                Email: adminEmail,
-                Name: "Admin"
-            });
+            const adminContactId =
+                await getContact({
+                    Email: adminEmail,
+                    name: "Admin"
+                });
 
             const adminOptions = {
                 variables: {
-                    OrderNumber: String(obj.orderNumber || ""),
-                    CustomerName: String(obj.Name || ""),
-                    Route: String(obj.Route || ""),
-                    DateTime: String(obj.DateTime || ""),
-                    Vehicle: String(obj.Vehicle || ""),
-                    Passenger: String(obj.Passenger || ""),
-                    Extras: String(obj.Extras || ""),
-                    bookedBy: String(obj.bookedBy || ""),
-                    totalPaid: String(obj.totalPaid || ""),
+
+                    OrderNumber: String(
+                        obj.orderNumber || ""
+                    ),
+
+                    CustomerName: String(
+                        obj.Name || ""
+                    ),
+
+                    Route: String(
+                        obj.Route || ""
+                    ),
+
+                    DateTime: String(
+                        obj.DateTime || ""
+                    ),
+
+                    Vehicle: String(
+                        obj.Vehicle || ""
+                    ),
+
+                    Passenger: String(
+                        obj.Passenger || ""
+                    ),
+
+                    Extras: String(
+                        obj.Extras || ""
+                    ),
+
+                    bookedBy: String(
+                        obj.bookedBy || ""
+                    ),
+
+                    totalPaid: String(
+                        obj.totalPaid || ""
+                    ),
+
                     SITE_URL: SITE_URL
                 }
             };
@@ -178,7 +273,9 @@ export const sendBookingEmails = webMethod(
                 adminOptions
             );
 
-            console.log("Admin booking email sent");
+            console.log(
+                "Admin booking email sent"
+            );
 
             return {
                 status: "Success"
@@ -199,30 +296,314 @@ export const sendBookingEmails = webMethod(
     }
 );
 
-// //...
-// triggeredEmails.emailContact('VUnWDRP', <enter-contact-id-here>, {
-//   variables: {
-//         agentName: <enter-value-here>,
-//         agentEmail: <enter-value-here>,
-//         phone: <enter-value-here>,
-//         SITE_URL: <enter-value-here>
-//   }
-// });
+// =========================================================
+// AGENT ADMIN EMAIL
+// Template: VUnWDRP
+//
+// Variables:
+// agentName
+// agentEmail
+// phone
+// SITE_URL
+// =========================================================
+export const sendAgentAdminEmail = webMethod(
+    Permissions.Anyone,
+    async (obj) => {
+        try {
+            const adminEmail = "support@transfermio.com";
 
-//...
-// triggeredEmails.emailContact('VUnYFUf', <enter-contact-id-here>, {
-//   variables: {
-//         agentname: <enter-value-here>,
-//         SITE_URL: <enter-value-here>
-//   }
-// });
+            const contactId = await getContact({
+                Email: adminEmail,
+                name: "TransferMio Admin"
+            });
 
-//...
-// triggeredEmails.emailContact('VUnZX26', <enter-contact-id-here>, {
-//   variables: {
-//         agentname: <enter-value-here>,
-//         email: <enter-value-here>,
-//         password: <enter-value-here>,
-//         SITE_URL: <enter-value-here>
-//   }
-// });
+            if (!contactId) {
+                throw new Error(
+                    "Could not find or create admin contact."
+                );
+            }
+
+            const options = {
+                variables: {
+                    agentName: String(obj.Name || ""),
+                    agentEmail: String(obj.Email || ""),
+                    phone: String(obj.Phone || ""),
+                    SITE_URL: SITE_URL
+                }
+            };
+
+            const emailResult =
+                await triggeredEmails.emailContact(
+                    AGENT_ADMIN,
+                    contactId,
+                    options
+                );
+
+            console.log(
+                "Admin email sent:",
+                emailResult
+            );
+
+            return {
+                status: "Success",
+                emailResult
+            };
+
+        } catch (error) {
+            console.error(
+                "sendAgentAdminEmail error:",
+                error
+            );
+
+            return {
+                status: "Failure",
+                message: error.message
+            };
+        }
+    }
+);
+
+// =========================================================
+// AGENT APPLICATION EMAIL
+// Template: VUnYFUf
+//
+// Variables:
+// agentname
+// SITE_URL
+//
+// This goes to the agent after application submission.
+// =========================================================
+
+export const sendAgentApplicationEmail = webMethod(
+    Permissions.Anyone,
+    async (obj) => {
+        try {
+            if (!obj?.Email) {
+                throw new Error("Agent email is required.");
+            }
+
+            // -----------------------------------
+            // 1. Send email to agent
+            // -----------------------------------
+
+            const contactId = await getContact({
+                Email: obj.Email,
+                name: obj.Name
+            });
+
+            if (!contactId) {
+                throw new Error(
+                    "Could not find or create agent contact."
+                );
+            }
+
+            const agentOptions = {
+                variables: {
+                    agentname: String(obj.Name || ""),
+                    SITE_URL: SITE_URL
+                }
+            };
+
+            const agentEmailResult =
+                await triggeredEmails.emailContact(
+                    AGENT_EMAIL_APPLICATION,
+                    contactId,
+                    agentOptions
+                );
+
+            console.log(
+                "Agent application email sent:",
+                agentEmailResult
+            );
+
+            // -----------------------------------
+            // 2. Only after agent email succeeds
+            //    send admin email
+            // -----------------------------------
+
+            const adminEmailResult =
+                await sendAgentAdminEmail(obj);
+
+            if (adminEmailResult?.status !== "Success") {
+                console.error(
+                    "Agent email sent, but admin email failed:",
+                    adminEmailResult
+                );
+
+                return {
+                    status: "Failure",
+                    stage: "ADMIN_EMAIL",
+                    message: adminEmailResult?.message ||
+                        "Admin email failed.",
+                    agentEmail: "Success",
+                    adminEmail: "Failure"
+                };
+            }
+
+            console.log(
+                "Agent application and admin emails sent successfully."
+            );
+
+            return {
+                status: "Success",
+                agentEmail: "Success",
+                adminEmail: "Success"
+            };
+
+        } catch (error) {
+            console.error(
+                "sendAgentApplicationEmail error:",
+                error
+            );
+
+            return {
+                status: "Failure",
+                message: error.message
+            };
+        }
+    }
+);
+
+// =========================================================
+// AGENT ACCOUNT CREDENTIALS
+// Template: VUnZX26
+//
+// Variables:
+// agentname
+// email
+// password
+// SITE_URL
+//
+// This goes to the agent after approval.
+// =========================================================
+
+export const sendAgentAccountCredentials = webMethod(
+    Permissions.Anyone,
+    async (obj) => {
+
+        try {
+
+            console.log(
+                "Sending agent account credentials:",
+                obj
+            );
+
+            const contactId = await getContact({
+                Email: obj.email,
+                name: obj.agentname
+            });
+
+            const options = {
+                variables: {
+
+                    agentname: String(
+                        obj.agentname || ""
+                    ),
+
+                    email: String(
+                        obj.email || ""
+                    ),
+
+                    password: String(
+                        obj.password || ""
+                    ),
+
+                    SITE_URL: SITE_URL
+                }
+            };
+
+            await triggeredEmails.emailContact(
+                AGENT_ACCOUNT_CREDENTIALS,
+                contactId,
+                options
+            );
+
+            console.log(
+                "Agent account credentials email sent"
+            );
+
+            return {
+                status: "Success"
+            };
+
+        } catch (error) {
+
+            console.error(
+                "sendAgentAccountCredentials error:",
+                error
+            );
+
+            return {
+                status: "Failure",
+                message: error.message
+            };
+        }
+    }
+);
+
+// Keep your existing getContact() helper in this file.
+
+// Internal function: called only after the backend
+// has verified and recorded the refund request.
+export async function sendBookingRefundEmailsInternal(obj) {
+
+    const variables = {
+        orderNumber: String(obj.orderNumber || ""),
+        customerName: String(obj.customerName || ""),
+        pickup: String(obj.pickup || ""),
+        destination: String(obj.destination || ""),
+        oldTotal: Number(obj.oldTotal).toFixed(2),
+        newTotal: Number(obj.newTotal).toFixed(2),
+        refundAmount: Number(obj.refundAmount).toFixed(2),
+        currency: "USD",
+        refundStatus: "Pending manual review"
+    };
+
+    const results = await Promise.allSettled([
+        (async () => {
+            const contactId = await getContact({
+                Email: obj.customerEmail,
+                name: obj.customerName
+            });
+
+            await triggeredEmails.emailContact(
+                REFUND_CLIENT_TEMPLATE,
+                contactId, { variables }
+            );
+        })(),
+
+        (async () => {
+            const contactId = await getContact({
+                Email: ADMIN_EMAIL,
+                name: "TransferMio Admin"
+            });
+
+            await triggeredEmails.emailContact(
+                REFUND_ADMIN_TEMPLATE,
+                contactId, {
+                    variables: {
+                        ...variables,
+                        customerEmail: String(obj.customerEmail || "")
+                    }
+                }
+            );
+        })()
+    ]);
+
+    const clientSent = results[0].status === "fulfilled";
+    const adminSent = results[1].status === "fulfilled";
+
+    results.forEach((result, index) => {
+        if (result.status === "rejected") {
+            console.error(
+                index === 0 ? "Client refund email failed" : "Admin refund email failed",
+                result.reason
+            );
+        }
+    });
+
+    return {
+        clientSent,
+        adminSent
+    };
+}
