@@ -1,6 +1,7 @@
 import { currentMember } from "wix-members-frontend";
 import { GetMyBookings, GetAgentBookingsPage, UpdateBooking } from "backend/CMS_Bookings.web.js";
 import { LoadPickups, LoadDestinations, LoadPrices } from 'backend/handler_drop.web.js'
+import { PaymentBookingDifference } from "backend/payment.web.js";
 import wixPayFrontend from "wix-pay-frontend";
 
 let isSavingBooking = false;
@@ -16,6 +17,7 @@ let editVehicles = [];
 let editBasePrice = 0;
 let selectedBooking = null;
 let isEditLoading = false;
+
 const EXTRA_PRICES = {
     childSeat: 10,
     boosterSeat: 5,
@@ -653,6 +655,8 @@ $w('#editaddon').onClick((event) => {
 async function initializeEditScreen(booking) {
 
     console.log("Initializing EditScreen:", booking);
+    editBasePrice = Number(booking.BASEPRICE || 0);
+
     initializeEditExtras(booking);
 
     // ========================================
@@ -682,8 +686,8 @@ async function initializeEditScreen(booking) {
     ]);
 
     updateEditPrice(
-        editBasePrice || Number(booking.BASEPRICE || 0),
-        Number(booking.extrasData?.totalExtras || 0)
+        editBasePrice,
+        editExtrasData.totalExtras
     );
     // ========================================
     // DATE AND TIME
@@ -746,13 +750,12 @@ async function initializeEditScreen(booking) {
 
     $w("#BookCreateDateEdit").text = `${formatPickupDate(booking._createdDate)} (Auto-updated)`;
 
-    $w("#BookEditedDateEdit").text = `${formatPickupDate(booking._updatedDateupd)} (Auto-updated)`;
+    $w("#BookEditedDateEdit").text = `${formatPickupDate(booking._updatedDate)} (Auto-updated)`;
 
     // ========================================
     // PRICE
     // ========================================
 
-    updateEditPrice(Number(booking.BASEPRICE || 0), Number(booking.extrasData?.totalExtras || 0));
 }
 
 async function loadPickupEdit(selectedPickup = "") {
@@ -934,8 +937,6 @@ $w("#VehicleEdit").onChange(() => {
 
     updateEditPrice(editBasePrice, editExtrasData.totalExtras);
 });
-
-
 
 function initializeEditExtras(booking) {
 
@@ -1195,7 +1196,6 @@ function setCheckboxGroup(selector, selected) {
     $w(selector).value = selected && options.length ? [options[0].value] : [];
 }
 
-
 function getBookingPriceDifference() {
 
     const oldTotal = Number(selectedBooking?.TOTALPRICE || 0);
@@ -1219,7 +1219,6 @@ function getBookingPriceDifference() {
     };
 }
 
-
 // ==========================================
 // DISPLAY MESSAGE
 // ==========================================
@@ -1232,9 +1231,6 @@ function showUpdateMessage(message) {
 
     console.log("Price message:", message);
 }
-
-
-
 
 // ==========================================
 // DISPLAY PRICE SCENARIO
@@ -1265,7 +1261,6 @@ function showPriceScenario(difference) {
         );
     }
 }
-
 
 // ==========================================
 // SINGLE PRICE UPDATE FUNCTION
@@ -1323,13 +1318,184 @@ function updateEditPrice(basePrice, extrasPrice) {
     showPriceScenario(priceInfo.difference);
 }
 
+async function processBookingUpdate(updatedBooking) {
 
+    const member = await currentMember.getMember();
 
+    if (!member?._id) {
+        throw new Error("Please log in again.");
+    }
 
+    const memberId = member._id;
 
-// ==========================================
-// SAVE BOOKING CHANGES
-// ==========================================
+    const {
+        oldTotal,
+        newTotal,
+        difference
+    } = getBookingPriceDifference();
+
+    console.log("Booking price difference:", {
+        oldTotal,
+        newTotal,
+        difference
+    });
+
+    // ==========================================
+    // SCENARIO 1: NORMAL BOOKING UPDATE
+    // ==========================================
+
+    if (difference === 0) {
+
+        showUpdateMessage("Saving booking changes...");
+
+        const result = await UpdateBooking(
+            updatedBooking,
+            memberId,
+            false
+        );
+
+        if (result.status !== "Success") {
+            throw new Error(
+                result.message || "Unable to update booking."
+            );
+        }
+
+        return result;
+    }
+
+    // ==========================================
+    // SCENARIO 2: REFUND REQUIRED
+    // ==========================================
+
+    if (difference < 0) {
+
+        const refundAmount = Math.abs(difference);
+
+        updatedBooking.refundRequest = {
+            amount: refundAmount,
+            currency: "USD",
+            oldTotal,
+            newTotal,
+            status: "PENDING",
+            requestedAt: new Date()
+        };
+
+        showUpdateMessage(
+            `Saving changes. Refund pending: $${refundAmount.toFixed(2)}`
+        );
+
+        const result = await UpdateBooking(
+            updatedBooking,
+            memberId,
+            false
+        );
+
+        if (result.status !== "Success") {
+            throw new Error(
+                result.message || "Unable to update booking."
+            );
+        }
+
+        // Refund notification emails should be sent
+        // by your backend after the CMS update succeeds.
+
+        showUpdateMessage(
+            `Booking updated. A refund of $${refundAmount.toFixed(2)} is pending.`
+        );
+
+        return result;
+    }
+
+    // ==========================================
+    // SCENARIO 3: ADDITIONAL PAYMENT
+    // ==========================================
+
+    if (difference > 0) {
+
+        showUpdateMessage(
+            `Additional payment required: $${difference.toFixed(2)}`
+        );
+
+        const payment = await PaymentBookingDifference({
+
+            amount: difference,
+            orderNumber: selectedBooking.orderNumber,
+
+            nameSurname: updatedBooking.nameSurname,
+            email: selectedBooking.email,
+            phone: updatedBooking.phone
+        });
+
+        if (payment.status !== "Success") {
+            throw new Error(
+                payment.message || "Unable to initiate payment."
+            );
+        }
+
+        console.log("Additional payment created:", payment);
+
+        const paymentResult = await wixPayFrontend.startPayment(payment.paymentId);
+
+        console.log("Wix Pay result:", paymentResult);
+
+        // ======================================
+        // PAYMENT NOT SUCCESSFUL
+        // ======================================
+
+        if (paymentResult.status !== "Successful") {
+
+            showUpdateMessage(
+                "Payment was not completed. Your booking remains unchanged."
+            );
+
+            return {
+                status: "Cancelled"
+            };
+        }
+
+        // ======================================
+        // PAYMENT SUCCESSFUL
+        // ======================================
+
+        updatedBooking.additionalCharge = {
+
+            amount: difference,
+            currency: "USD",
+
+            paymentId: payment.paymentId,
+
+            status: "PAID",
+
+            oldTotal,
+            newTotal,
+
+            paidAt: new Date()
+        };
+
+        showUpdateMessage(
+            "Payment successful. Updating your booking..."
+        );
+
+        const result = await UpdateBooking(
+            updatedBooking,
+            memberId,
+            false
+        );
+
+        if (result.status !== "Success") {
+            throw new Error(
+                result.message ||
+                "Payment completed, but booking update failed. Please contact support."
+            );
+        }
+
+        showUpdateMessage(
+            "Payment successful! Your booking has been updated."
+        );
+
+        return result;
+    }
+}
 
 async function saveBookingChanges() {
 
@@ -1338,207 +1504,94 @@ async function saveBookingChanges() {
     }
 
     isSavingBooking = true;
-
     $w("#saveChanges").disable();
 
     try {
 
-        // ======================================
-        // UPDATE ADD-ON CALCULATIONS
-        // ======================================
-
+        // Recalculate extras before saving
         updateEditExtrasPrice();
-
-        // ======================================
-        // VALIDATE FORM
-        // ======================================
 
         if (!validateBookingEdit()) {
             return;
         }
 
-        // ======================================
-        // CHECK PRICE DIFFERENCE
-        // ======================================
-
-        const { difference } = getBookingPriceDifference();
-
-        if (difference > 0) {
-
-            showUpdateMessage(
-                `The new booking costs $${difference.toFixed(2)} more. ` +
-                "An additional payment is required before this change can be saved."
-            );
-
-            return;
-        }
-
-        if (difference < 0) {
-
-            showUpdateMessage(
-                `The new booking costs $${Math.abs(difference).toFixed(2)} less. ` +
-                "A refund must be arranged before this change can be saved."
-            );
-
-            return;
-        }
-
-        // ======================================
-        // GET CURRENT LOGGED-IN MEMBER
-        // ======================================
-
-        const member = await currentMember.getMember();
-
-        if (!member?._id) {
-
-            throw new Error(
-                "Please log in again to update your booking."
-            );
-        }
-
-        const currentMemberId = member._id;
-
-        console.log(
-            "Current member ID:",
-            currentMemberId
-        );
-
-        // ======================================
-        // PREPARE UPDATED BOOKING OBJECT
-        // ======================================
-
         const updatedBooking = {
-
             _id: selectedBooking._id,
 
             pickup: $w("#pickupEdit").value,
-
             destination: $w("#destinationEdit").value,
-
             vehicleName: $w("#VehicleEdit").value,
 
             arrivaldate: $w("#pickupDateEdit").value,
-
             arrivaltime: $w("#pickupTimeEdit").value,
+            passenger: Number($w("#PassengerEdit").value),
 
-            passenger: Number(
-                $w("#PassengerEdit").value
-            ),
-
-            flightNo: $w("#flightNoEdit").value,
-
+            flightNumber: $w("#flightNoEdit").value,
             comments: $w("#commentsEdit").value,
 
             nameSurname: $w("#customerNameEdit").value,
-
             phone: $w("#PhoneCustomerEdit").value,
 
             extrasData: editExtrasData
-
         };
 
-        console.log(
-            "Updated booking object:",
-            updatedBooking
-        );
+        console.log("Booking changes:", updatedBooking);
 
-        // ======================================
-        // CALL BACKEND UPDATE FUNCTION
-        // ======================================
+        const result = await processBookingUpdate(updatedBooking);
 
-        showUpdateMessage(
-            "Saving your booking changes..."
-        );
+        if (result.status === "Cancelled") {
+            return;
+        }
 
-        const result = await UpdateBooking(
-            updatedBooking,
-            currentMemberId,
-            false
-        );
-
-        console.log(
-            "UpdateBooking response:",
-            result
-        );
-
-        // ======================================
-        // HANDLE BACKEND RESPONSE
-        // ======================================
+        if (result.status === "PendingVerification") {
+            showUpdateMessage(
+                "Your payment is being verified. " +
+                "The booking will update once payment is confirmed."
+            );
+            return;
+        }
 
         if (result.status !== "Success") {
-
             throw new Error(
-                result.message ||
-                "Unable to update booking."
+                result.message || "Unable to update booking."
             );
         }
 
-        // ======================================
-        // UPDATE SELECTED BOOKING
-        // ======================================
-
         selectedBooking = result.payload;
 
-        showBookingDetails(selectedBooking);
-
-        // ======================================
-        // REFRESH BOOKINGS
-        // ======================================
-
+        // Refresh booking list
         if (currentAgent === "Customer") {
-
             await loadCustomerBookings();
-
         } else if (currentAgent === "Agent") {
-
             await loadAgentBookings();
         }
 
-        // ======================================
-        // RETURN TO DETAILS SCREEN
-        // ======================================
+        // Display updated booking
+        if (selectedBooking) {
+            showBookingDetails(selectedBooking);
+        }
 
-        await $w("#statebox8").changeState(
-            "ViewDetails"
-        );
-
-        showUpdateMessage(
-            "Your booking has been updated successfully."
-        );
+        console.log("Booking updated successfully:", result);
 
     } catch (error) {
 
-        console.error(
-            "Booking update error:",
-            error
-        );
+        console.error("Save booking error:", error);
 
         showUpdateMessage(
-            error.message ||
-            "Unable to update your booking."
+            error.message || "Unable to save booking changes."
         );
 
     } finally {
 
         isSavingBooking = false;
-
         $w("#saveChanges").enable();
     }
 }
 
-// ==========================================
-// SAVE BUTTON
-// ==========================================
-
+// Register this handler ONLY ONCE
 $w("#saveChanges").onClick(async () => {
-
     await saveBookingChanges();
-
 });
-
-$w('#saveChanges').onClick((event) => {
-
-})
 
 // ==========================================
 // AGENT VEHICLE DISCOUNT
@@ -1554,7 +1607,6 @@ function getEditVehiclePrice(rawPrice) {
 
     return price;
 }
-
 
 // ==========================================
 // VALIDATE EDIT FORM
