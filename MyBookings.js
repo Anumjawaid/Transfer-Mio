@@ -1,6 +1,9 @@
 import { currentMember } from "wix-members-frontend";
-import { GetMyBookings, GetAgentBookingsPage } from "backend/CMS_Bookings.web.js";
+import { GetMyBookings, GetAgentBookingsPage, UpdateBooking } from "backend/CMS_Bookings.web.js";
 import { LoadPickups, LoadDestinations, LoadPrices } from 'backend/handler_drop.web.js'
+import wixPayFrontend from "wix-pay-frontend";
+
+let isSavingBooking = false;
 
 const CUSTOMER_ROLE_ID = "b405ef8d-e944-4f03-97a0-33ff66ba14ef";
 const AGENT_ROLE_ID = "83eaa9ff-9ddf-414e-9e75-02e0adc62c7b";
@@ -469,7 +472,7 @@ function showBookingDetails(itemData) {
     $w("#PassengerView").text = itemData.passenger != null ? String(itemData.passenger) : "N/A";
 
     // Flight Number
-    $w("#flightNoView").text = itemData.flightNo || "N/A";
+    $w("#flightNoView").text = itemData.flightNumber || "N/A";
 
     // Addons
     $w("#addonsView").text = formatAddons(itemData.extrasData);
@@ -708,7 +711,7 @@ async function initializeEditScreen(booking) {
     // ========================================
 
     $w("#flightNoEdit").value =
-        booking.flightNo || "";
+        booking.flightNumber || "";
 
     // ========================================
     // EXTRAS
@@ -731,31 +734,27 @@ async function initializeEditScreen(booking) {
     // CUSTOMER INFORMATION
     // ========================================
 
-    $w("#customerNameEdit").value =
-        booking.nameSurname || booking.name || "";
+    $w("#customerNameEdit").value = booking.nameSurname || booking.name || "";
 
-    $w("#emailcustomerEdit").value =
-        booking.email || "";
+    $w("#emailcustomerEdit").value = booking.email || "";
 
-    $w("#PhoneCustomerEdit").value =
-        booking.phone || "";
+    $w("#PhoneCustomerEdit").value = booking.phone || "";
 
     // ========================================
     // BOOKING DATES
     // ========================================
 
-    $w("#BookCreateDateEdit").text =
-        `${formatPickupDate(booking._createdDate)} (Auto-updated)`;
+    $w("#BookCreateDateEdit").text = `${formatPickupDate(booking._createdDate)} (Auto-updated)`;
+
+    $w("#BookEditedDateEdit").text = `${formatPickupDate(booking._updatedDateupd)} (Auto-updated)`;
 
     // ========================================
     // PRICE
     // ========================================
 
-    updateEditPrice(
-        Number(booking.BASEPRICE || 0),
-        Number(booking.extrasData?.totalExtras || 0)
-    );
+    updateEditPrice(Number(booking.BASEPRICE || 0), Number(booking.extrasData?.totalExtras || 0));
 }
+
 async function loadPickupEdit(selectedPickup = "") {
 
     const result = await LoadPickups();
@@ -832,11 +831,7 @@ async function loadDestinationEdit(
 
     $w("#destinationEdit").enable();
 }
-async function loadVehicleEdit(
-    pickup,
-    destination,
-    selectedVehicle = ""
-) {
+async function loadVehicleEdit(pickup, destination, selectedVehicle = "") {
     try {
         $w("#VehicleEdit").disable();
 
@@ -873,10 +868,13 @@ async function loadVehicleEdit(
                 price: Number(priceRecord[fieldKey])
             }));
 
-        // Populate all available vehicle options
         const options = editVehicles.map(vehicle => ({
-            label: `${vehicle.name} (${vehicle.passengers} Passengers) - $${vehicle.price.toFixed(2)}`,
+
+            label: `${vehicle.name} (${vehicle.passengers} Passengers) - ` +
+                `$${getEditVehiclePrice(vehicle.price).toFixed(2)}`,
+
             value: vehicle.name
+
         }));
 
         // Match existing booking vehicle
@@ -902,7 +900,14 @@ async function loadVehicleEdit(
             selectedVehicle || undefined;
 
         editBasePrice = matchedVehicle ?
-            matchedVehicle.price :
+            (
+                selectedBooking &&
+                matchedVehicle.name === selectedBooking.vehicleName &&
+                pickup === selectedBooking.pickup &&
+                destination === selectedBooking.destination ?
+                Number(selectedBooking.BASEPRICE || 0) :
+                getEditVehiclePrice(matchedVehicle.price)
+            ) :
             Number(selectedBooking?.BASEPRICE || 0);
 
         $w("#VehicleEdit").enable();
@@ -915,6 +920,7 @@ async function loadVehicleEdit(
         $w("#VehicleEdit").enable();
     }
 }
+
 $w("#VehicleEdit").onChange(() => {
     const selectedVehicleName = $w("#VehicleEdit").value;
 
@@ -924,35 +930,12 @@ $w("#VehicleEdit").onChange(() => {
 
     if (!vehicle) return;
 
-    editBasePrice = vehicle.price;
+    editBasePrice = getEditVehiclePrice(vehicle.price);
 
-    updateEditPrice(
-        editBasePrice,
-        editExtrasData.totalExtras
-    );
+    updateEditPrice(editBasePrice, editExtrasData.totalExtras);
 });
 
-function updateEditPrice(basePrice, extrasPrice) {
 
-    const base = Number(basePrice) || 0;
-    const extras = Number(extrasPrice) || 0;
-
-    const total = base + extras;
-
-    $w("#extraPriceEdit").text =
-        `$${extras.toFixed(2)}`;
-
-    // Use the edit screen's total price text ID here.
-    // Replace #totalPriceEdit if your element has a different ID.
-    $w("#totalPriceEdit").text =
-        `$${total.toFixed(2)}`;
-
-    console.log("Edit booking price:", {
-        basePrice: base,
-        extrasPrice: extras,
-        totalPrice: total
-    });
-}
 
 function initializeEditExtras(booking) {
 
@@ -1209,7 +1192,539 @@ function updateEditExtrasPrice() {
 function setCheckboxGroup(selector, selected) {
     const options = $w(selector).options;
 
-    $w(selector).value = selected && options.length ?
-        [options[0].value] :
-        [];
+    $w(selector).value = selected && options.length ? [options[0].value] : [];
 }
+
+
+function getBookingPriceDifference() {
+
+    const oldTotal = Number(selectedBooking?.TOTALPRICE || 0);
+
+    const newTotal = Math.round(
+        (
+            Number(editBasePrice || 0) +
+            Number(editExtrasData.totalExtras || 0)
+        ) * 100
+    ) / 100;
+
+    const difference = (
+        Math.round(newTotal * 100) -
+        Math.round(oldTotal * 100)
+    ) / 100;
+
+    return {
+        oldTotal,
+        newTotal,
+        difference
+    };
+}
+
+
+// ==========================================
+// DISPLAY MESSAGE
+// ==========================================
+
+function showUpdateMessage(message) {
+
+    $w("#loadingTxt").text = message;
+
+    $w("#loadingTxt").show();
+
+    console.log("Price message:", message);
+}
+
+
+
+
+// ==========================================
+// DISPLAY PRICE SCENARIO
+// ==========================================
+
+function showPriceScenario(difference) {
+
+    const amount = Math.abs(difference).toFixed(2);
+
+    if (difference > 0) {
+
+        showUpdateMessage(
+            `Your booking price has increased by $${amount}. ` +
+            "An additional payment will be required."
+        );
+
+    } else if (difference < 0) {
+
+        showUpdateMessage(
+            `Your booking price has decreased by $${amount}. ` +
+            "A refund will need to be arranged."
+        );
+
+    } else {
+
+        showUpdateMessage(
+            "No price change. You can save your booking updates."
+        );
+    }
+}
+
+
+// ==========================================
+// SINGLE PRICE UPDATE FUNCTION
+// ==========================================
+
+function updateEditPrice(basePrice, extrasPrice) {
+
+    editBasePrice = Number(basePrice) || 0;
+
+    const extras = Number(extrasPrice) || 0;
+
+    const total = Math.round(
+        (editBasePrice + extras) * 100
+    ) / 100;
+
+    // Update displayed prices
+    $w("#basePriceEdit").text =
+        `Base Price for the flight is $${editBasePrice.toFixed(2)}`;
+
+    $w("#extraPriceEdit").text =
+        `$${extras.toFixed(2)}`;
+
+    $w("#totalPriceEdit").text =
+        `$${total.toFixed(2)}`;
+
+    // Avoid displaying misleading price differences
+    // before a route and vehicle have been selected.
+    const pickup = $w("#pickupEdit").value;
+    const destination = $w("#destinationEdit").value;
+    const vehicle = $w("#VehicleEdit").value;
+
+    if (!selectedBooking || !pickup || !destination || !vehicle) {
+
+        showUpdateMessage(
+            "Please select your pickup, destination and vehicle."
+        );
+
+        return;
+    }
+
+    // Do not treat an unavailable vehicle as a free vehicle
+    if (editBasePrice <= 0) {
+
+        showUpdateMessage(
+            "Please select an available vehicle."
+        );
+
+        return;
+    }
+
+    const priceInfo = getBookingPriceDifference();
+
+    console.log("Booking price comparison:", priceInfo);
+
+    showPriceScenario(priceInfo.difference);
+}
+
+
+
+
+
+// ==========================================
+// SAVE BOOKING CHANGES
+// ==========================================
+
+async function saveBookingChanges() {
+
+    if (!selectedBooking?._id || isSavingBooking) {
+        return;
+    }
+
+    isSavingBooking = true;
+
+    $w("#saveChanges").disable();
+
+    try {
+
+        // ======================================
+        // UPDATE ADD-ON CALCULATIONS
+        // ======================================
+
+        updateEditExtrasPrice();
+
+        // ======================================
+        // VALIDATE FORM
+        // ======================================
+
+        if (!validateBookingEdit()) {
+            return;
+        }
+
+        // ======================================
+        // CHECK PRICE DIFFERENCE
+        // ======================================
+
+        const { difference } = getBookingPriceDifference();
+
+        if (difference > 0) {
+
+            showUpdateMessage(
+                `The new booking costs $${difference.toFixed(2)} more. ` +
+                "An additional payment is required before this change can be saved."
+            );
+
+            return;
+        }
+
+        if (difference < 0) {
+
+            showUpdateMessage(
+                `The new booking costs $${Math.abs(difference).toFixed(2)} less. ` +
+                "A refund must be arranged before this change can be saved."
+            );
+
+            return;
+        }
+
+        // ======================================
+        // GET CURRENT LOGGED-IN MEMBER
+        // ======================================
+
+        const member = await currentMember.getMember();
+
+        if (!member?._id) {
+
+            throw new Error(
+                "Please log in again to update your booking."
+            );
+        }
+
+        const currentMemberId = member._id;
+
+        console.log(
+            "Current member ID:",
+            currentMemberId
+        );
+
+        // ======================================
+        // PREPARE UPDATED BOOKING OBJECT
+        // ======================================
+
+        const updatedBooking = {
+
+            _id: selectedBooking._id,
+
+            pickup: $w("#pickupEdit").value,
+
+            destination: $w("#destinationEdit").value,
+
+            vehicleName: $w("#VehicleEdit").value,
+
+            arrivaldate: $w("#pickupDateEdit").value,
+
+            arrivaltime: $w("#pickupTimeEdit").value,
+
+            passenger: Number(
+                $w("#PassengerEdit").value
+            ),
+
+            flightNo: $w("#flightNoEdit").value,
+
+            comments: $w("#commentsEdit").value,
+
+            nameSurname: $w("#customerNameEdit").value,
+
+            phone: $w("#PhoneCustomerEdit").value,
+
+            extrasData: editExtrasData
+
+        };
+
+        console.log(
+            "Updated booking object:",
+            updatedBooking
+        );
+
+        // ======================================
+        // CALL BACKEND UPDATE FUNCTION
+        // ======================================
+
+        showUpdateMessage(
+            "Saving your booking changes..."
+        );
+
+        const result = await UpdateBooking(
+            updatedBooking,
+            currentMemberId,
+            false
+        );
+
+        console.log(
+            "UpdateBooking response:",
+            result
+        );
+
+        // ======================================
+        // HANDLE BACKEND RESPONSE
+        // ======================================
+
+        if (result.status !== "Success") {
+
+            throw new Error(
+                result.message ||
+                "Unable to update booking."
+            );
+        }
+
+        // ======================================
+        // UPDATE SELECTED BOOKING
+        // ======================================
+
+        selectedBooking = result.payload;
+
+        showBookingDetails(selectedBooking);
+
+        // ======================================
+        // REFRESH BOOKINGS
+        // ======================================
+
+        if (currentAgent === "Customer") {
+
+            await loadCustomerBookings();
+
+        } else if (currentAgent === "Agent") {
+
+            await loadAgentBookings();
+        }
+
+        // ======================================
+        // RETURN TO DETAILS SCREEN
+        // ======================================
+
+        await $w("#statebox8").changeState(
+            "ViewDetails"
+        );
+
+        showUpdateMessage(
+            "Your booking has been updated successfully."
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Booking update error:",
+            error
+        );
+
+        showUpdateMessage(
+            error.message ||
+            "Unable to update your booking."
+        );
+
+    } finally {
+
+        isSavingBooking = false;
+
+        $w("#saveChanges").enable();
+    }
+}
+
+// ==========================================
+// SAVE BUTTON
+// ==========================================
+
+$w("#saveChanges").onClick(async () => {
+
+    await saveBookingChanges();
+
+});
+
+$w('#saveChanges').onClick((event) => {
+
+})
+
+// ==========================================
+// AGENT VEHICLE DISCOUNT
+// ==========================================
+
+function getEditVehiclePrice(rawPrice) {
+
+    const price = Number(rawPrice) || 0;
+
+    if (currentAgent === "Agent") {
+        return Math.round(price * 0.85 * 100) / 100;
+    }
+
+    return price;
+}
+
+
+// ==========================================
+// VALIDATE EDIT FORM
+// ==========================================
+
+function validateBookingEdit() {
+
+    const requiredFields = [
+        "#pickupEdit",
+        "#destinationEdit",
+        "#VehicleEdit",
+        "#pickupDateEdit",
+        "#pickupTimeEdit",
+        "#PassengerEdit",
+        "#customerNameEdit",
+        "#emailcustomerEdit",
+        "#PhoneCustomerEdit"
+    ];
+
+    for (const id of requiredFields) {
+
+        const element = $w(id);
+        const value = element.value;
+
+        if (
+            value === undefined ||
+            value === null ||
+            String(value).trim() === "" ||
+            element.valid === false
+        ) {
+
+            if (
+                typeof element.updateValidityIndication === "function"
+            ) {
+                element.updateValidityIndication();
+            }
+
+            showUpdateMessage(
+                "Please complete all required fields correctly."
+            );
+
+            return false;
+        }
+    }
+
+    // ======================================
+    // PASSENGER CAPACITY
+    // ======================================
+
+    const vehicle = editVehicles.find(
+        v => v.name === $w("#VehicleEdit").value
+    );
+
+    const passengers = Number(
+        $w("#PassengerEdit").value
+    );
+
+    if (
+        !vehicle ||
+        !Number.isInteger(passengers) ||
+        passengers < 1 ||
+        passengers > vehicle.passengers
+    ) {
+
+        showUpdateMessage(
+            "Please select a valid vehicle and passenger count."
+        );
+
+        return false;
+    }
+
+    // ======================================
+    // STOP LOCATION
+    // ======================================
+
+    if (
+        editExtras.stop &&
+        !String(editExtras.stopLocation || "").trim()
+    ) {
+
+        showUpdateMessage(
+            "Please enter the stop location."
+        );
+
+        return false;
+    }
+
+    return true;
+}
+// ==========================================
+// PICKUP CHANGE
+// ==========================================
+
+$w("#pickupEdit").onChange(async () => {
+
+    try {
+
+        $w("#VehicleEdit").options = [];
+        $w("#VehicleEdit").value = undefined;
+
+        editVehicles = [];
+        editBasePrice = 0;
+
+        updateEditPrice(
+            0,
+            editExtrasData.totalExtras
+        );
+
+        await loadDestinationEdit(
+            $w("#pickupEdit").value
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Pickup change error:",
+            error
+        );
+
+        showUpdateMessage(
+            "Unable to load destinations."
+        );
+    }
+});
+
+// ==========================================
+// DESTINATION CHANGE
+// ==========================================
+
+$w("#destinationEdit").onChange(async () => {
+
+    try {
+
+        editVehicles = [];
+        editBasePrice = 0;
+
+        updateEditPrice(
+            0,
+            editExtrasData.totalExtras
+        );
+
+        const pickup = $w("#pickupEdit").value;
+        const destination = $w("#destinationEdit").value;
+
+        if (pickup && destination) {
+
+            await loadVehicleEdit(
+                pickup,
+                destination
+            );
+
+            $w("#VehicleEdit").value = undefined;
+
+            editBasePrice = 0;
+
+            updateEditPrice(
+                0,
+                editExtrasData.totalExtras
+            );
+        }
+
+    } catch (error) {
+
+        console.error(
+            "Destination change error:",
+            error
+        );
+
+        showUpdateMessage(
+            "Unable to load vehicle prices."
+        );
+    }
+});
