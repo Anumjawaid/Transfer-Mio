@@ -11,7 +11,7 @@ import {
     LoadPrices
 } from "backend/handler_drop.web.js";
 
-import { formatDate } from "public/universal.js";
+import { formatDate, formatTime } from "public/universal.js";
 
 // =====================================================
 // GLOBAL VARIABLES
@@ -22,6 +22,16 @@ let DESTINATION = "";
 let PASSENGERS = "";
 let DATE = "";
 let RATES = {};
+let ORIGINALBASEPRICE = 0;
+let DISCOUNTEDBASEPRICE = 0;
+let AGENT_DISCOUNT = 15;
+let VEHICLENAME = ""
+let ARRIVALTIME = ""
+let BASEPRICE=0
+
+let BOOKINGOBJ = null;
+
+const BOOKED_BY = "AGENT";
 
 let activeState = "State1";
 let Route = "AirportToCity";
@@ -29,8 +39,6 @@ let Route = "AirportToCity";
 let selectedIndex = "";
 let isLoadingRates = false;
 let rateRequestId = 0;
-
-const AGENT_DISCOUNT = 15;
 
 const mapforVehicle = {
     "Bus 13": "bus13Pax",
@@ -41,6 +49,135 @@ const mapforVehicle = {
     "Mini Van 4": "minivan4Pax"
 };
 
+function getAgentPrice(originalPrice) {
+    const price = Number(originalPrice);
+
+    if (!Number.isFinite(price) || price <= 0) {
+        return null;
+    }
+
+    return Number(
+        (price * (1 - AGENT_DISCOUNT / 100)).toFixed(2)
+    );
+}
+
+function getExtras() {
+    const childSeats = Number($w("#child-seat").value) || 0;
+    const infantSeats = Number($w("#infant-seat").value) || 0;
+    const boosterSeats = Number($w("#booster-seat").value) || 0;
+    const water = Number($w("#drinkwater-input").value) || 0;
+
+    const waiting = $w("#waitingcheckbox").value.length !== 0;
+    const stop = $w("#stopcheckbox").value.length !== 0;
+    const pets = $w("#petscheckbox").value.length !== 0;
+
+    const extras = [];
+
+    if (childSeats > 0) {
+        extras.push({
+            name: "Child Seat",
+            quantity: childSeats,
+            price: 10
+        });
+    }
+
+    if (infantSeats > 0) {
+        extras.push({
+            name: "Infant Seat",
+            quantity: infantSeats,
+            price: 10
+        });
+    }
+
+    if (boosterSeats > 0) {
+        extras.push({
+            name: "Booster",
+            quantity: boosterSeats,
+            price: 5
+        });
+    }
+
+    if (waiting) {
+        extras.push({
+            name: "Extra hour of waiting",
+            quantity: 1,
+            price: 14
+        });
+    }
+
+    if (stop) {
+        extras.push({
+            name: "Stop",
+            quantity: 1,
+            price: 14
+        });
+    }
+
+    if (pets) {
+        extras.push({
+            name: "Travelling with pets",
+            quantity: 1,
+            price: 0
+        });
+    }
+
+    if (water > 0) {
+        extras.push({
+            name: "Drinking Water",
+            quantity: water,
+            price: 3
+        });
+    }
+
+    const totalExtras = extras.reduce(
+        (total, extra) => total + extra.price * extra.quantity,
+        0
+    );
+
+    return {
+        extras,
+        totalExtras
+    };
+}
+
+function OrderSummaryUpdate() {
+    const extrasData = getExtras();
+
+    const totalPrice =
+        Number(DISCOUNTEDBASEPRICE) + extrasData.totalExtras;
+
+    $w("#pickuplocation").text = PICKUP || "";
+    $w("#destinationLocation").text = DESTINATION || "";
+    $w("#arrivaldatetxt").text = DATE ? formatDate(DATE) : "";
+    $w("#arrivaltime").text = ARRIVALTIME ?
+        formatTime(ARRIVALTIME) :
+        "";
+
+    $w("#vehicle").text = VEHICLENAME || "";
+    $w("#passengerstxt").text = String(PASSENGERS || "");
+
+    // Discounted vehicle price only.
+    $w("#subprice").text =
+        "$ " + Number(DISCOUNTEDBASEPRICE).toFixed(2);
+
+    $w("#totalprice").text =
+        "$ " + totalPrice.toFixed(2);
+
+    if (extrasData.extras.length > 0) {
+        $w("#extraaddition").text = extrasData.extras
+            .map(extra => `${extra.name} × ${extra.quantity}`)
+            .join(", ");
+
+        $w("#extraprice").text =
+            "$ " + extrasData.totalExtras.toFixed(2);
+
+        $w("#extraaddition").expand();
+        $w("#extraprice").expand();
+    } else {
+        $w("#extraaddition").collapse();
+        $w("#extraprice").collapse();
+    }
+}
 // Vehicle repeater data.
 // Add image/capacity fields here if you want to populate those
 // elements dynamically instead of using the existing item template.
@@ -122,8 +259,7 @@ function normalizeLocations(result, key) {
     const raw = Array.isArray(result) ?
         result :
         Array.isArray(result?.payload) ?
-        result.payload :
-        [];
+        result.payload : [];
 
     return [
         ...new Set(
@@ -583,17 +719,17 @@ function isValidPrice(price) {
     );
 }
 
-function getAgentPrice(originalPrice) {
-    const price = Number(originalPrice);
+// function getAgentPrice(originalPrice) {
+//     const price = Number(originalPrice);
 
-    if (!Number.isFinite(price) || price <= 0) {
-        return null;
-    }
+//     if (!Number.isFinite(price) || price <= 0) {
+//         return null;
+//     }
 
-    return Number(
-        (price * (1 - AGENT_DISCOUNT / 100)).toFixed(2)
-    );
-}
+//     return Number(
+//         (price * (1 - AGENT_DISCOUNT / 100)).toFixed(2)
+//     );
+// }
 
 async function refreshRoutePrices() {
     if (!PICKUP || !DESTINATION) {
@@ -757,6 +893,17 @@ function setupVehicleRepeater() {
             const rateKey = mapforVehicle[vehicleName];
             const originalPrice = rateKey ? RATES[rateKey] : undefined;
 
+            // newer
+            ORIGINALBASEPRICE = Number(originalPrice);
+            DISCOUNTEDBASEPRICE = getAgentPrice(ORIGINALBASEPRICE);
+
+            if (DISCOUNTEDBASEPRICE === null) {
+                showError("Unable to calculate the discounted vehicle price.");
+                return;
+            }
+
+            BASEPRICE = DISCOUNTEDBASEPRICE;
+
             if (!isValidPrice(originalPrice)) {
                 showError("This vehicle is unavailable for the selected route.");
                 return;
@@ -812,7 +959,7 @@ function setupVehicleRepeater() {
             clearError();
 
             // Continue to the customer-details state on this page.
-             $w("#statebox10").changeState("Booking");
+            $w("#statebox10").changeState("Booking");
         });
 
         // Initial price display.
