@@ -1,186 +1,719 @@
-import { LoadPickups, LoadPrices, LoadfromDestination, LoadDestinations } from 'backend/handler_drop.web.js'
-import { session } from "wix-storage-frontend"
+import { LoadPickupInstant, LoadDestinationInstant, LoadPrices } from 'backend/handler_drop.web.js';
+
+import { session } from "wix-storage-frontend";
 import wixLocationFrontend from 'wix-location-frontend';
 
-let Route = "AirportToCity"
+// ==========================================
+// GLOBAL VARIABLES
+// ==========================================
 
-$w.onReady(async function () {
+let Route = "AirportToCity";
 
-    let airports = await LoadPickups()
-    if (airports.length != 0) {
-        // 
-        const airportsloc = airports.map((v) => { return { label: v, value: v } })
-        $w('#pickup1').options = airportsloc
-        const Cities = await LoadDestinations()
-        if (Cities.length != []) {
-            $w('#city2').options = Cities.map((v) => { return { label: v, value: v } })
-        }
+let selectedPickup = "";
+let selectedDestination = "";
+
+let pickupSearchRequest = 0;
+let destinationSearchRequest = 0;
+
+let pickupSearchTimer;
+let destinationSearchTimer;
+
+let isSubmitting = false;
+
+// ==========================================
+// HELPER FUNCTIONS
+// ==========================================
+
+// Converts backend results to string arrays
+function normalizeLocations(result, key) {
+
+    const data = Array.isArray(result) ?
+        result :
+        Array.isArray(result?.payload) ?
+        result.payload : [];
+
+    return [...new Set(
+        data.map(item => {
+
+            if (typeof item === "string") {
+                return item.trim();
+            }
+
+            return String(
+                item?.[key] ||
+                item?.name ||
+                item?.label ||
+                ""
+            ).trim();
+
+        }).filter(Boolean)
+    )];
+}
+
+// Generate a stable repeater ID for each location.
+// This hash is deterministic for the same string.
+function makeLocationId(name) {
+
+    let hash = 2166136261;
+
+    for (const char of String(name)) {
+        hash ^= char.charCodeAt(0);
+        hash = Math.imul(hash, 16777619);
     }
 
-});
+    return "loc" + (hash >>> 0).toString(36);
+}
 
-$w('#state2change').onClick((event) => {
-    $w('#statebox8').changeState("State1")
-    Route = "AirportToCity"
+// Create repeater data with unique IDs
+function createRepeaterData(locations) {
 
-})
+    return locations.map(name => ({
+        _id: makeLocationId(name),
+        name
+    }));
+}
 
-$w('#statechange1').onClick((event) => {
-    $w('#statebox8').changeState("State2")
-    Route = "CityToAirport"
+// ==========================================
+// ERROR MESSAGES
+// ==========================================
 
-})
+function showBookingError(message) {
 
-// $w('#airport1').onChange(async (event) => {
-//     console.log($w('#airport1').value, "Airport")
-//     let city_price = await LoadfromCity($w('#airport1').value)
-//     console.log(city_price, "cityProce")
-//     if (city_price.length != 0) {
-//         // 
-//         $w('#city1').options = city_price.map((v) => { return { label: v.city, value: v.city } })
-//     }
+    $w("#exception").text = message;
+    $w("#exception").show();
+}
 
-// })
+function clearBookingError() {
 
-// $w('#book1').onClick((event) => {
-//     if (Route == "AirportToCity") {
-//         if ($w('#airport1').value == "" || $w('#city1').value == " ") {
-//             $w('#exception1').show()
-//             setTimeout(() => {
-//                 $w('#exception1').hide()
-//             }, 1000);
-//         } else {
-//             // 
-//             sendTobookNow()
+    $w("#exception").text = "";
+    $w("#exception").hide();
+}
 
-//         }
-//     } else {
-//         // 
-//         if ($w('#airport2').value == "" || $w('#city2').value == " ") {
-//             $w('#exception1').show()
-//             setTimeout(() => {
-//                 $w('#exception1').hide()
-//             }, 1000);
-//         } else {
-//             // 
-//             sendTobookNow()
+// ==========================================
+// RESET SEARCH RESULTS
+// ==========================================
 
-//         }
-//     }
-// })
+function clearPickupResults() {
 
-// function sendTobookNow() {
-//     if (Route == "AirportToCity") {
-//         session.setItem("Airport", $w('#airport1').value)
-//         session.setItem("City", $w('#city1').value)
-//         session.setItem("Price", $w('#price1').value)
-//         session.setItem('People', $w('#people1').value)
-//         session.setItem("Route", Route)
-//     } else {
-//         session.setItem("Airport", $w('#airport2').value)
-//         session.setItem("City", $w('#city2').value)
-//         session.setItem("Price", $w('#price1').value)
-//         session.setItem('People', $w('#people1').value)
-//         session.setItem("Route", Route)
-//     }
+    $w("#pickupRepeater").data = [];
+    $w("#pickupRepeater").collapse();
+}
 
-//     wixLocationFrontend.to("/book-now1")
+function clearDestinationResults() {
 
-// }
+    $w("#destinationRepeater").data = [];
+    $w("#destinationRepeater").collapse();
+}
 
-// $w('#city1').onChange(async (event) => {
-//     // from city get row and display result
+// ==========================================
+// RESET DESTINATION
+// ==========================================
 
-// })
+function resetDestination() {
 
-// $w('#people1').onChange(async (event) => {
-//     console.log("In Route ", Route)
-//     if (Route == "AirportToCity") {
+    selectedDestination = "";
 
-//         let get_price = await LoadCityPrice($w('#airport1').value, $w('#city1').value, $w('#people1').value)
-//         if (get_price != undefined) {
-//             // 
-//             $w('#price1').value = get_price + ""
-//         }
-//     } else {
-//         let get_price = await LoadCityPrice($w('#airport2').value, $w('#city2').value, $w('#people1').value)
-//         if (get_price != undefined) {
-//             // 
-//             $w('#price1').value = get_price + ""
-//         }
+    destinationSearchRequest++;
 
-//     }
+    clearTimeout(destinationSearchTimer);
 
-// })
+    $w("#destinationSearch").value = "";
 
-// $w('#city2').onChange(async (event) => {
-//     let load = await LoadfromAirport($w('#city2').value)
-//     $w('#airport2').options = []
-//     if (load.length != 0) {
-//         // 
-//         $w('#airport2').options = load.map((v) => { return { label: v.airport, value: v.airport } })
+    clearDestinationResults();
+}
 
-//     }
-// })
+// ==========================================
+// SEARCH PICKUPS FROM CMS
+// ==========================================
 
-$w('#bookNow').onClick(async (event) => {
-    // Disable button immediately to prevent multiple clicks
-    $w('#bookNow').disable();
+async function searchPickups(searchText) {
 
-    // Get values
-    const pickup = $w('#pickup1').value;
-    const destination = $w('#destination1').value;
+    const requestId = ++pickupSearchRequest;
 
-    // Clear previous exception
-    $w('#exception').text = '';
-    $w('#exception').hide();
+    const query = String(searchText || "").trim();
 
-    // Validate required fields
-    if (!pickup || !destination) {
-        $w('#exception').text = 'Please fill required fields to proceed.';
-        $w('#exception').show();
+    if (query.length < 2) {
 
-        // Re-enable button because operation stopped
-        $w('#bookNow').enable();
+        clearPickupResults();
         return;
     }
 
     try {
-        let rates = await LoadPrices(pickup, destination)
-        console.log(rates, "rates")
-        // Your operation/navigation
-        session.setItem("Pickup", pickup)
-        session.setItem("Destination", destination)
-        session.setItem("Date", String($w('#datePicker1').value))
-        session.setItem("Passengers", $w('#passengers').value)
 
-        session.setItem("RatesWindow", JSON.stringify(rates))
+        const response = await LoadPickupInstant(query);
 
-        wixLocationFrontend.to('/route-vehicle');
+        // Ignore responses from older searches
+        if (requestId !== pickupSearchRequest) {
+            return;
+        }
+
+        const locations = normalizeLocations(
+            response,
+            "pickUpLocation"
+        );
+
+        // Prioritize locations beginning with the query
+        const sortedLocations = locations.sort((a, b) => {
+
+            const search = query.toLowerCase();
+
+            const aStarts = a.toLowerCase().startsWith(search);
+            const bStarts = b.toLowerCase().startsWith(search);
+
+            if (aStarts && !bStarts) return -1;
+            if (!aStarts && bStarts) return 1;
+
+            return a.localeCompare(b);
+        });
+
+        const repeaterData = createRepeaterData(
+            sortedLocations
+        );
+
+        $w("#pickupRepeater").data = repeaterData;
+
+        // Update existing repeater items too
+        $w("#pickupRepeater").forEachItem(
+            ($item, itemData) => {
+
+                $item("#pickupResultTxt").text =
+                    itemData.name;
+            }
+        );
+
+        if (repeaterData.length > 0) {
+
+            $w("#pickupRepeater").expand();
+
+        } else {
+
+            clearPickupResults();
+        }
 
     } catch (error) {
-        console.error(error);
 
-        $w('#exception').text = 'Something went wrong. Please try again.';
-        $w('#exception').show();
+        if (requestId !== pickupSearchRequest) return;
 
-        // Re-enable if operation fails
-        $w('#bookNow').enable();
+        console.error("Pickup search error:", error);
+
+        clearPickupResults();
+
+        showBookingError(
+            "Unable to search pickup locations. Please try again."
+        );
+    }
+}
+
+// ==========================================
+// SEARCH DESTINATIONS FROM CMS
+// ==========================================
+
+async function searchDestinations(searchText) {
+
+    const requestId = ++destinationSearchRequest;
+
+    const query = String(searchText || "").trim();
+
+    if (!selectedPickup || query.length < 2) {
+
+        clearDestinationResults();
+        return;
     }
 
-})
+    const pickupAtRequest = selectedPickup;
 
-$w('#pickup1').onChange(async (event) => {
-    console.log($w('#pickup1').value, "Airport")
-    let destinations = await LoadDestinations($w('#pickup1').value)
-    console.log(destinations, "cityProce")
-    if (destinations.length != 0) {
-        // 
-        $w('#destination1').options = destinations.map((v) => { return { label: v.destination, value: v.destination } })
+    try {
+
+        const response = await LoadDestinationInstant(
+            pickupAtRequest,
+            query
+        );
+
+        // Prevent stale results
+        if (
+            requestId !== destinationSearchRequest ||
+            pickupAtRequest !== selectedPickup
+        ) {
+            return;
+        }
+
+        const locations = normalizeLocations(
+            response,
+            "destination"
+        );
+
+        const sortedLocations = locations.sort((a, b) => {
+
+            const search = query.toLowerCase();
+
+            const aStarts = a.toLowerCase().startsWith(search);
+            const bStarts = b.toLowerCase().startsWith(search);
+
+            if (aStarts && !bStarts) return -1;
+            if (!aStarts && bStarts) return 1;
+
+            return a.localeCompare(b);
+        });
+
+        const repeaterData = createRepeaterData(
+            sortedLocations
+        );
+
+        $w("#destinationRepeater").data = repeaterData;
+
+        $w("#destinationRepeater").forEachItem(
+            ($item, itemData) => {
+
+                $item("#destinationResultTxt").text =
+                    itemData.name;
+            }
+        );
+
+        if (repeaterData.length > 0) {
+
+            $w("#destinationRepeater").expand();
+
+        } else {
+
+            clearDestinationResults();
+        }
+
+    } catch (error) {
+
+        if (requestId !== destinationSearchRequest) return;
+
+        console.error("Destination search error:", error);
+
+        clearDestinationResults();
+
+        showBookingError(
+            "Unable to search destinations. Please try again."
+        );
+    }
+}
+
+// ==========================================
+// VALIDATE SELECTED LOCATIONS
+// ==========================================
+
+function validateLocations() {
+
+    const pickupInput = String(
+        $w("#pickupSearch").value || ""
+    ).trim();
+
+    const destinationInput = String(
+        $w("#destinationSearch").value || ""
+    ).trim();
+
+    if (
+        !selectedPickup ||
+        pickupInput !== selectedPickup
+    ) {
+
+        showBookingError(
+            "Please select a valid pickup location from the suggestions."
+        );
+
+        return false;
     }
 
+    if (
+        !selectedDestination ||
+        destinationInput !== selectedDestination
+    ) {
+
+        showBookingError(
+            "Please select a valid destination from the suggestions."
+        );
+
+        return false;
+    }
+
+    return true;
+}
+
+// ==========================================
+// PAGE READY
+// ==========================================
+
+$w.onReady(function () {
+
+    // Hide errors and results initially
+    clearBookingError();
+
+    clearPickupResults();
+    clearDestinationResults();
+
+    // ======================================
+    // PICKUP REPEATER
+    // ======================================
+
+    $w("#pickupRepeater").onItemReady(
+        ($item, itemData) => {
+
+            $item("#pickupResultTxt").text =
+                itemData.name;
+
+            $item("#pickupResultTxt").onClick(() => {
+
+                // Cancel pending searches
+                pickupSearchRequest++;
+                clearTimeout(pickupSearchTimer);
+
+                selectedPickup = itemData.name;
+
+                $w("#pickupSearch").value =
+                    itemData.name;
+
+                clearPickupResults();
+
+                // Changing pickup invalidates destination
+                resetDestination();
+
+                clearBookingError();
+
+                console.log(
+                    "Selected pickup:",
+                    selectedPickup
+                );
+            });
+        }
+    );
+     $w("#pickupRepeater2").onItemReady(
+        ($item, itemData) => {
+
+            $item("#pickupResultTxt2").text =
+                itemData.name;
+
+            $item("#pickupResultTxt2").onClick(() => {
+
+                // Cancel pending searches
+                pickupSearchRequest++;
+                clearTimeout(pickupSearchTimer);
+
+                selectedPickup = itemData.name;
+
+                $w("#pickupSearch2").value =
+                    itemData.name;
+
+                clearPickupResults();
+
+                // Changing pickup invalidates destination
+                resetDestination();
+
+                clearBookingError();
+
+                console.log(
+                    "Selected pickup:",
+                    selectedPickup
+                );
+            });
+        }
+    );
+
+    // ======================================
+    // DESTINATION REPEATER
+    // ======================================
+
+    $w("#destinationRepeater").onItemReady(
+        ($item, itemData) => {
+
+            $item("#destinationResultTxt").text =
+                itemData.name;
+
+            $item("#destinationResultTxt").onClick(() => {
+
+                destinationSearchRequest++;
+                clearTimeout(destinationSearchTimer);
+
+                selectedDestination = itemData.name;
+
+                $w("#destinationSearch").value =
+                    itemData.name;
+
+                clearDestinationResults();
+
+                clearBookingError();
+
+                console.log(
+                    "Selected destination:",
+                    selectedDestination
+                );
+            });
+        }
+    );
+      $w("#destinationRepeater2").onItemReady(
+        ($item, itemData) => {
+
+            $item("#destinationResultTxt2").text =
+                itemData.name;
+
+            $item("#destinationResultTxt2").onClick(() => {
+
+                destinationSearchRequest++;
+                clearTimeout(destinationSearchTimer);
+
+                selectedDestination = itemData.name;
+
+                $w("#destinationSearch2").value =
+                    itemData.name;
+
+                clearDestinationResults();
+
+                clearBookingError();
+
+                console.log(
+                    "Selected destination:",
+                    selectedDestination
+                );
+            });
+        }
+    );
+
+    // ======================================
+    // PICKUP INPUT
+    // ======================================
+
+    $w("#pickupSearch").onInput(event => {
+
+        const query = event.target.value;
+
+        // Invalidate previously selected pickup
+        selectedPickup = "";
+
+        // Clear destination when pickup changes
+        resetDestination();
+
+        clearBookingError();
+        clearPickupResults();
+
+        pickupSearchRequest++;
+
+        clearTimeout(pickupSearchTimer);
+
+        if (String(query).trim().length < 2) {
+            return;
+        }
+
+        // Debounce backend search
+        pickupSearchTimer = setTimeout(() => {
+
+            searchPickups(query);
+
+        }, 300);
+    });
+    $w("#pickupSearch2").onInput(event => {
+
+        const query = event.target.value;
+
+        // Invalidate previously selected pickup
+        selectedPickup = "";
+
+        // Clear destination when pickup changes
+        resetDestination();
+
+        clearBookingError();
+        clearPickupResults();
+
+        pickupSearchRequest++;
+
+        clearTimeout(pickupSearchTimer);
+
+        if (String(query).trim().length < 2) {
+            return;
+        }
+
+        // Debounce backend search
+        pickupSearchTimer = setTimeout(() => {
+
+            searchPickups(query);
+
+        }, 300);
+    });
+
+    // ======================================
+    // DESTINATION INPUT
+    // ======================================
+
+    $w("#destinationSearch").onInput(event => {
+
+        const query = event.target.value;
+
+        selectedDestination = "";
+
+        clearBookingError();
+        clearDestinationResults();
+
+        destinationSearchRequest++;
+
+        clearTimeout(destinationSearchTimer);
+
+        if (!selectedPickup) {
+
+            showBookingError(
+                "Please select a pickup location first."
+            );
+
+            return;
+        }
+
+        if (String(query).trim().length < 2) {
+            return;
+        }
+
+        destinationSearchTimer = setTimeout(() => {
+
+            searchDestinations(query);
+
+        }, 300);
+    });
+    $w("#destinationSearch2").onInput(event => {
+
+        const query = event.target.value;
+
+        selectedDestination = "";
+
+        clearBookingError();
+        clearDestinationResults();
+
+        destinationSearchRequest++;
+
+        clearTimeout(destinationSearchTimer);
+
+        if (!selectedPickup) {
+
+            showBookingError(
+                "Please select a pickup location first."
+            );
+
+            return;
+        }
+
+        if (String(query).trim().length < 2) {
+            return;
+        }
+
+        destinationSearchTimer = setTimeout(() => {
+
+            searchDestinations(query);
+
+        }, 300);
+    });
+
+    // ======================================
+    // CONTINUE BUTTON
+    // ======================================
+
+    $w('#bookNow').onClick(async (event) => {
+        console.log(isSubmitting, "in onclick")
+        if (isSubmitting) return;
+
+        isSubmitting = true;
+        console.log(isSubmitting, "in 2ndonclick")
+        $w("#bookNow").disable();
+
+        clearBookingError();
+
+        try {
+
+            // Validate pickup and destination
+            if (!validateLocations()) {
+                return;
+            }
+
+            // ==================================
+            // LOAD ROUTE PRICES
+            // ==================================
+
+            const rates = await LoadPrices(
+                selectedPickup,
+                selectedDestination
+            );
+
+            console.log("Loaded rates:", rates);
+
+            if (
+                !rates ||
+                (Array.isArray(rates) && rates.length === 0)
+            ) {
+
+                showBookingError(
+                    "No available vehicles or rates found for this route."
+                );
+
+                return;
+            }
+
+            // ==================================
+            // SAVE BOOKING SESSION
+            // ==================================
+
+            session.setItem(
+                "Pickup",
+                selectedPickup
+            );
+
+            session.setItem(
+                "Destination",
+                selectedDestination
+            );
+
+            session.setItem(
+                "Date",
+                String($w("#datePicker1").value)
+            );
+
+            session.setItem(
+                "Passengers",
+                $w("#passengers").value
+            );
+
+            session.setItem(
+                "RatesWindow",
+                JSON.stringify(rates)
+            );
+
+            console.log(
+                "Booking session saved successfully."
+            );
+
+            // ==================================
+            // NAVIGATE TO VEHICLE PAGE
+            // ==================================
+
+            wixLocationFrontend.to("/route-vehicle");
+
+        } catch (error) {
+
+            console.error(
+                "Booking continuation error:",
+                error
+            );
+
+            showBookingError(
+                "Something went wrong. Please try again."
+            );
+
+        } finally {
+
+            isSubmitting = false;
+
+            $w("#bookNow").enable();
+        }
+    });
 })
 
-$w('#destination1').onChange((event) => {
+$w('#state2change').onClick((event) => {
+    $w("#statebox8").changeState("State1");
+
+    Route = "AirportToCity";
 
 })
+
+$w("#statechange1").onClick(() => {
+
+    $w("#statebox8").changeState("State2");
+
+    Route = "CityToAirport";
+});
