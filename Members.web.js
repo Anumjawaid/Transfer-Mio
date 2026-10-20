@@ -1,9 +1,22 @@
 import { Permissions, webMethod } from "wix-web-module";
-import { authentication, authorization } from "wix-members-backend";
-import { sendAccountCredentials, sendAgentAccountCredentials } from 'backend/Email.web.js';
 
-const CUSTOMER_ROLE_ID = "b405ef8d-e944-4f03-97a0-33ff66ba14ef"
-const AGENT_ROLE_ID = "83eaa9ff-9ddf-414e-9e75-02e0adc62c7b"
+import {
+    authentication,
+    authorization
+} from "wix-members-backend";
+
+import { members } from "wix-members.v2";
+import { elevate } from "wix-auth";
+
+import {
+    sendAccountCredentials,
+    sendAgentAccountCredentials
+} from "backend/Email.web.js";
+
+const CUSTOMER_ROLE_ID = "b405ef8d-e944-4f03-97a0-33ff66ba14ef";
+const AGENT_ROLE_ID = "83eaa9ff-9ddf-414e-9e75-02e0adc62c7b";
+
+const elevatedQueryMembers = elevate(members.queryMembers);
 
 export const RegisterCustomer = webMethod(
     Permissions.Anyone,
@@ -11,7 +24,11 @@ export const RegisterCustomer = webMethod(
 
         try {
 
-            if (!email) {
+            // ========================================
+            // VALIDATE EMAIL
+            // ========================================
+
+            if (!email || !email.trim()) {
                 return {
                     status: "Failure-400",
                     message: "Email is required."
@@ -20,13 +37,49 @@ export const RegisterCustomer = webMethod(
 
             email = email.trim().toLowerCase();
 
+            // ========================================
+            // CHECK IF CUSTOMER ALREADY EXISTS
+            // ========================================
+
+            const existingMembers = await elevatedQueryMembers({
+                filter: {
+                    loginEmail: {
+                        $eq: email
+                    }
+                },
+                paging: {
+                    limit: 1
+                }
+            });
+
+            const existingMember = existingMembers.members?.[0];
+
+            if (existingMember) {
+
+                console.log(
+                    "Existing customer found:",
+                    existingMember._id
+                );
+
+                return {
+                    status: "ExistingMember",
+                    email,
+                    isExistingMember: true,
+                    memberId: existingMember._id,
+                    message: "Existing customer found."
+                };
+            }
+
+            // ========================================
+            // REGISTER NEW CUSTOMER
+            // ========================================
+
             const password = generateRandomPassword();
 
-            const registration =
-                await authentication.register(
-                    email,
-                    password
-                );
+            const registration = await authentication.register(
+                email,
+                password
+            );
 
             const memberId =
                 registration.member?._id ||
@@ -39,7 +92,15 @@ export const RegisterCustomer = webMethod(
                 };
             }
 
-            // Assign CUSTOMER role
+            console.log(
+                "New customer registered:",
+                memberId
+            );
+
+            // ========================================
+            // ASSIGN CUSTOMER ROLE
+            // ========================================
+
             await authorization.assignRole(
                 CUSTOMER_ROLE_ID,
                 memberId, {
@@ -47,14 +108,14 @@ export const RegisterCustomer = webMethod(
                 }
             );
 
-            // -----------------------------------------------
+            // ========================================
             // SEND ACCOUNT CREDENTIALS EMAIL
-            // -----------------------------------------------
+            // ========================================
 
             const emailResult = await sendAccountCredentials({
                 name: name || "",
-                email: email,
-                password: password
+                email,
+                password
             });
 
             console.log(
@@ -62,11 +123,16 @@ export const RegisterCustomer = webMethod(
                 emailResult
             );
 
+            // ========================================
+            // RETURN NEW CUSTOMER DETAILS
+            // ========================================
+
             return {
                 status: "Success",
                 email,
                 password,
                 memberId,
+                isExistingMember: false,
                 emailResult
             };
 
@@ -85,6 +151,10 @@ export const RegisterCustomer = webMethod(
     }
 );
 
+// ========================================
+// GENERATE RANDOM PASSWORD
+// ========================================
+
 function generateRandomPassword() {
 
     const characters =
@@ -94,8 +164,9 @@ function generateRandomPassword() {
 
     for (let i = 0; i < 12; i++) {
 
-        const index =
-            Math.floor(Math.random() * characters.length);
+        const index = Math.floor(
+            Math.random() * characters.length
+        );
 
         password += characters[index];
     }
