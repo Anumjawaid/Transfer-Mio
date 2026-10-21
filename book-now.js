@@ -5,6 +5,8 @@ import wixPayFrontend from "wix-pay-frontend";
 import { SaveBooking, GenerateUniqueOrderNumber, } from 'backend/CMS_Bookings.web.js'
 import { PaymentInitiate } from 'backend/payment.web';
 import { RegisterCustomer } from "backend/Members.web.js"
+import { convertUsdToEur } from 'backend/currencyconversion.web.js'
+import { currentMember } from "wix-members-frontend";
 
 let PICKUP, DESTINATION, PASSENGERS, DATE, ARRIVALTIME, VEHICLENAME, VEHICLECAPACITY, BASEPRICE, TOTALPRICE, BOOKINGOBJ
 const CHILD_SEAT_PRICE = 10;
@@ -13,7 +15,7 @@ const BOOSTER_SEAT_PRICE = 5;
 const WAITING_PRICE = 14;
 const STOP_PRICE = 14;
 const WATER_PRICE = 3; // change this to your actual water price
-
+let CURRENTCURRENCY = "USD"
 $w.onReady(function () {
 
     PICKUP = session.getItem("Pickup");
@@ -210,7 +212,7 @@ function restoreBooking(booking) {
     }
 }
 
-function OrderSummaryUpdate() {
+async function OrderSummaryUpdate() {
 
     const extrasData = getExtras();
 
@@ -223,12 +225,14 @@ function OrderSummaryUpdate() {
     $w('#arrivaltime').text = ARRIVALTIME;
     $w('#vehicle').text = VEHICLENAME;
     $w('#passengers').text = PASSENGERS;
+    let convert = await convertUsdToEur(BASEPRICE)
+    console.log(convert, "convert")
+    let convert2 = await convertUsdToEur(totalPrice)
+    console.log(convert2, "convert2")
+    console.log(BASEPRICE, "basePrice", totalPrice, "roral price")
+    $w('#subprice').text = `$ ${Number(BASEPRICE).toFixed(2)} ≡ € ${convert} `
 
-    $w('#subprice').text =
-        "$ " + Number(BASEPRICE).toFixed(2);
-
-    $w('#totalprice').text =
-        "$ " + totalPrice.toFixed(2);
+    $w('#totalprice').text = `$ ${Number(totalPrice).toFixed(2)} ≡ € ${convert2}`
 
     if (extrasData.extras.length > 0) {
 
@@ -484,6 +488,7 @@ $w('#petscheckbox').onChange((event) => {
 })
 
 $w('#Continue').onClick(async () => {
+    console.log("In Continue")
 
     // ==========================================
     // 1. GET REQUIRED CUSTOMER INFORMATION
@@ -620,7 +625,7 @@ $w('#Continue').onClick(async () => {
     // 7. MOVE TO PAYMENT STATE
     // ==========================================
     $w('#byCard').scrollTo()
-    $w('#button1').scrollTo()
+    // $w('#button1').scrollTo()
     $w('#statebox8').changeState("PaymentSelection");
 
 });
@@ -630,9 +635,11 @@ $w('#byCard').onChange((event) => {
         // 
         $w('#box14').style.borderColor = "#1E1E1E"
         $w('#box14').style.borderWidth = '1px'
+        $w('#currencygroup').expand()
     } else {
         $w('#box14').style.borderColor = "#FFFFFF"
         $w('#box14').style.borderWidth = '1px'
+        $w('#currencygroup').collapse()
     }
 })
 
@@ -649,29 +656,24 @@ $w('#paymentBtn').onClick(async () => {
             return;
         }
 
-        const bookingObj =
-            JSON.parse(savedBooking);
+        const bookingObj =JSON.parse(savedBooking);
 
         BOOKINGOBJ = bookingObj;
+        bookingObj.currency = CURRENTCURRENCY
 
         // =========================
         // CREATE PAYMENT
         // =========================
 
-        const payment =
-            await PaymentInitiate(bookingObj);
+        const payment =await PaymentInitiate(bookingObj);
 
         // =========================
         // OPEN PAYMENT WINDOW
         // =========================
 
-        const paymentResult =
-            await wixPayFrontend.startPayment(payment.id);
+        const paymentResult =await wixPayFrontend.startPayment(payment.id);
 
-        console.log(
-            "Payment result:",
-            paymentResult
-        );
+        console.log("Payment result:", paymentResult);
 
         // =========================
         // CHECK PAYMENT STATUS
@@ -680,88 +682,188 @@ $w('#paymentBtn').onClick(async () => {
         if (paymentResult.status === "Successful") {
 
             console.log("Payment successful");
+            const registerResult = await RegisterCustomer({
+                email: bookingObj.email,
+                name: bookingObj.nameSurname
+            });
 
-            // =========================
-            // SAVE BOOKING
-            // =========================
-
-            let save = await SaveBooking(bookingObj);
-            console.log(save, "save")
-            if (save.status != "Success") {
-                // show exception 
-                wixLocationFrontend.to("/thank-you")
-                return
+            if (
+                registerResult.status !== "Success" &&
+                registerResult.status !== "ExistingMember"
+            ) {
+                console.error("Customer registration failed:", registerResult);
+                return;
             }
 
-            // =========================
-            // REMOVE TEMPORARY SESSION
-            // =========================
+            // ========================================
+            // EXISTING CUSTOMER
+            // ========================================
 
-            // session.removeItem("Booking");
+            if (registerResult.isExistingMember) {
 
-            console.log(
-                "Booking successfully saved"
+                session.setItem("CustomerEmail", registerResult.email);
+                session.setItem("CustomerMemberId", registerResult.memberId);
+
+                // No new password for existing customers
+                session.removeItem("CustomerPassword");
+
+            } else {
+
+                // ========================================
+                // NEW CUSTOMER
+                // ========================================
+
+                session.setItem("CustomerEmail", registerResult.email);
+                session.setItem("CustomerPassword", registerResult.password);
+                session.setItem("CustomerMemberId", registerResult.memberId);
+            }
+
+            // ========================================
+            // SAVE BOOKING
+            // ========================================
+
+            bookingObj.bookedmemberId = registerResult.memberId;
+            bookingObj.paymentId = payment.id
+            bookingObj.paymentDetails = payment
+
+            const save = await SaveBooking(bookingObj);
+
+            if (save.status !== "Success") {
+                console.error("Booking save failed:", save);
+                return;
+            }
+
+            console.log("Booking saved successfully:", save.payload);
+
+            wixLocationFrontend.to(
+                "/thank-you"
             );
 
         } else if (paymentResult.status === "Cancelled") {
-           
+
             console.log("Payment successful");
 
-    // Register customer
-    const registerResult = await RegisterCustomer({
-        email: bookingObj.email,
-        name: bookingObj.nameSurname
-    });
+            console.log("Payment successful");
 
-    console.log(
-        "Customer registration:",
-        registerResult
-    );
+            let memberId = null;
 
+            // ========================================
+            // 1. CHECK IF CUSTOMER IS LOGGED IN
+            // ========================================
 
-    if (registerResult.status === "Success") {
+            let loggedInMember = null;
 
-        session.setItem(
-            "CustomerEmail",
-            registerResult.email
-        );
+            try {
+                loggedInMember = await currentMember.getMember();
+            } catch (error) {
+                console.log("No logged-in member found:", error);
+            }
 
-        session.setItem(
-            "CustomerPassword",
-            registerResult.password
-        );
+            if (loggedInMember?._id || loggedInMember?.id) {
 
-        session.setItem(
-            "CustomerMemberId",
-            registerResult.memberId
-        );
-    }
+                // ========================================
+                // LOGGED-IN CUSTOMER
+                // ========================================
 
+                memberId = loggedInMember._id || loggedInMember.id;
 
-    // Save booking
-    const save = await SaveBooking(
-        bookingObj
-    );
+                session.setItem("CustomerEmail", bookingObj.email);
+                session.setItem("CustomerMemberId", memberId);
 
+                // Do not generate or store a new password
+                session.removeItem("CustomerPassword");
 
-    if (save.status !== "Success") {
+                console.log("Using logged-in member ID:", memberId);
 
-        console.error(
-            "Booking could not be saved:",
-            save
-        );
+            } else {
 
-        return;
-    }
+                // ========================================
+                // GUEST CUSTOMER: REGISTER OR FIND EXISTING
+                // ========================================
 
+                const registerResult = await RegisterCustomer({
+                    email: bookingObj.email,
+                    name: bookingObj.nameSurname
+                });
 
-    console.log(
-        "Booking successfully saved"
-    );
+                console.log("Registration result:", registerResult);
 
-    wixLocationFrontend.to(
-        "/thank-you"
-    );
+                if (
+                    registerResult.status !== "Success" &&
+                    registerResult.status !== "ExistingMember"
+                ) {
+                    console.error(
+                        "Customer registration failed:",
+                        registerResult
+                    );
+                    return;
+                }
+
+                if (!registerResult.memberId) {
+                    console.error(
+                        "Customer member ID is missing:",
+                        registerResult
+                    );
+                    return;
+                }
+
+                memberId = registerResult.memberId;
+
+                session.setItem(
+                    "CustomerEmail",
+                    registerResult.email || bookingObj.email
+                );
+
+                session.setItem("CustomerMemberId", memberId);
+
+                if (registerResult.isExistingMember) {
+
+                    // Existing Wix account: reuse its member ID
+                    session.removeItem("CustomerPassword");
+
+                    console.log("Using existing member ID:", memberId);
+
+                } else {
+
+                    // New Wix account: preserve credentials for Thank You page
+                    session.setItem(
+                        "CustomerPassword",
+                        registerResult.password
+                    );
+
+                    console.log("New customer registered:", memberId);
+                }
+            }
+
+            // ========================================
+            // 2. SAVE BOOKING WITH MEMBER ID
+            // ========================================
+
+            bookingObj.bookedmemberId = memberId;
+            bookingObj.paymentId = payment.id;
+            bookingObj.paymentDetails = payment;
+            bookingObj.currency = CURRENTCURRENCY;
+
+            const save = await SaveBooking(bookingObj);
+
+            if (save.status !== "Success") {
+                console.error("Booking save failed:", save);
+                return;
+            }
+
+            console.log("Booking saved successfully:", save.payload);
+
+            // ========================================
+            // 3. REDIRECT TO THANK YOU PAGE
+            // ========================================
+
+            wixLocationFrontend.to("/thank-you");
+
+            // ========================================
+            // REDIRECT TO THANK YOU PAGE
+            // ========================================
+
+            wixLocationFrontend.to("/thank-you");
 
             // goto thankyou page 
         } else {
@@ -787,3 +889,47 @@ $w('#editTransfer').onClick((event) => {
     $w('#statebox8').changeState("BookingForm")
 })
 
+$w('#Eurocheck').onChange((event) => {
+    if ($w('#Eurocheck').checked) {
+
+        // Uncheck USD
+        $w('#dollarcurrency').checked = false;
+
+        // Set currency to EUR
+        CURRENTCURRENCY = "EUR";
+
+    } else {
+        // Keep EUR selected if user tries to uncheck it
+        $w('#Eurocheck').checked = true;
+    }
+
+    console.log("Current Currency:", CURRENTCURRENCY);
+});
+
+$w('#dollarcurrency').onChange((event) => {
+    if ($w('#dollarcurrency').checked) {
+
+        // Uncheck EUR
+        $w('#Eurocheck').checked = false;
+
+        // Set currency to USD
+        CURRENTCURRENCY = "USD";
+
+    } else {
+        // Keep USD selected if user tries to uncheck it
+        $w('#dollarcurrency').checked = true;
+    }
+
+    console.log("Current Currency:", CURRENTCURRENCY);
+});
+
+$w('#box8').onMouseIn((event) => {
+    // formFactor API
+    // $w('#button2').style.backgroundColor = "#B01315"
+
+})
+
+$w('#box12').onClick((event) => {
+    // $w('#button3').style.backgroundColor = "#B01315"
+
+})
