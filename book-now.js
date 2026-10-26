@@ -3,7 +3,7 @@ import wixLocationFrontend from "wix-location-frontend"
 import { formatDate, formatTime } from 'public/universal.js'
 import wixPayFrontend from "wix-pay-frontend";
 import { SaveBooking, GenerateUniqueOrderNumber, } from 'backend/CMS_Bookings.web.js'
-import { PaymentInitiate } from 'backend/payment.web';
+import { PaymentInitiate, GetBookingPaymentStatus } from "backend/payment.web.js";
 import { RegisterCustomer } from "backend/Members.web.js"
 import { convertUsdToEur } from 'backend/currencyconversion.web.js'
 import { currentMember } from "wix-members-frontend";
@@ -52,6 +52,163 @@ $w.onReady(function () {
 
     OrderSummaryUpdate();
 });
+
+async function monitorPaymentStatus(paymentId, orderNumber) {
+    const maxAttempts = 600; // 30 minutes at 3-second intervals
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            const result = await GetBookingPaymentStatus(paymentId);
+
+            if (
+                result.status === "Success" &&
+                result.paymentStatus === "SUCCESSFUL" &&
+                result.bookingStatus === "CONFIRMED"
+            ) {
+                console.log("Payment confirmed by backend:", orderNumber);
+
+                wixLocationFrontend.to(
+                    `/thank-you?orderNumber=${encodeURIComponent(orderNumber)}`
+                );
+
+                return;
+            }
+
+            // Stop monitoring when the backend reports a terminal
+            // unsuccessful status. The pending booking remains available
+            // for reconciliation if necessary.
+            if (
+                result.status === "Success" &&
+                result.paymentStatus &&
+                !["PENDING", "CREATED", "SUCCESSFUL"].includes(
+                    String(result.paymentStatus).toUpperCase()
+                )
+            ) {
+                console.log(
+                    "Payment did not succeed:",
+                    result.paymentStatus
+                );
+                return;
+            }
+
+        } catch (error) {
+            console.error("Payment status check failed:", error);
+            // A temporary status-check failure should not erase the booking.
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+
+    console.warn(
+        "Payment monitoring timed out. Check the booking/payment in the admin dashboard."
+    );
+}
+
+async function processCustomerAndSaveBooking(bookingObj, payment) {
+    try {
+        console.log("Processing customer and booking...");
+
+        let memberId = null;
+
+        // ========================================
+        // 1. CHECK IF CUSTOMER IS LOGGED IN
+        // ========================================
+        let loggedInMember = null;
+
+        try {
+            loggedInMember = await currentMember.getMember();
+        } catch (error) {
+            console.log("No logged-in member found:", error);
+        }
+
+        if (loggedInMember?._id || loggedInMember?.id) {
+
+            // Logged-in customer: reuse current member ID
+            memberId = loggedInMember._id || loggedInMember.id;
+
+            session.setItem("CustomerEmail", bookingObj.email);
+            session.setItem("CustomerMemberId", memberId);
+            session.removeItem("CustomerPassword");
+
+            console.log("Using logged-in member ID:", memberId);
+
+        } else {
+
+            // Guest customer: register or find existing member
+            const registerResult = await RegisterCustomer({
+                email: bookingObj.email,
+                name: bookingObj.nameSurname
+            });
+
+            console.log("Registration result:", registerResult);
+
+            if (
+                registerResult.status !== "Success" &&
+                registerResult.status !== "ExistingMember"
+            ) {
+                console.error("Customer registration failed:", registerResult);
+                return { status: "Failure", message: "Customer registration failed." };
+            }
+
+            if (!registerResult.memberId) {
+                console.error("Customer member ID is missing:", registerResult);
+                return { status: "Failure", message: "Customer member ID is missing." };
+            }
+
+            memberId = registerResult.memberId;
+
+            session.setItem(
+                "CustomerEmail",
+                registerResult.email || bookingObj.email
+            );
+
+            session.setItem("CustomerMemberId", memberId);
+
+            if (registerResult.isExistingMember) {
+                // Existing account: do not create or store a new password
+                session.removeItem("CustomerPassword");
+                console.log("Using existing member ID:", memberId);
+
+            } else {
+                // New account: preserve credentials for the Thank You page
+                session.setItem("CustomerPassword", registerResult.password);
+                console.log("New customer registered:", memberId);
+            }
+        }
+
+        // ========================================
+        // 2. SAVE BOOKING WITH MEMBER ID
+        // ========================================
+        bookingObj.bookedmemberId = memberId;
+        bookingObj.paymentId = payment.id;
+        bookingObj.paymentDetails = payment;
+        bookingObj.currency = CURRENTCURRENCY;
+
+        const save = await SaveBooking(bookingObj);
+
+        if (save.status !== "Success") {
+            console.error("Booking save failed:", save);
+            return { status: "Failure", message: "Booking could not be saved." };
+        }
+
+        console.log("Booking saved successfully:", save.payload);
+
+        // ========================================
+        // 3. REDIRECT TO THANK YOU PAGE
+        // ========================================
+        wixLocationFrontend.to("/thank-you");
+
+        return { status: "Success", payload: save.payload };
+
+    } catch (error) {
+        console.error("Error processing customer and booking:", error);
+
+        return {
+            status: "Failure",
+            message: error.message
+        };
+    }
+}
 
 function initializeNewBooking() {
 
@@ -497,6 +654,8 @@ $w('#Continue').onClick(async () => {
     const name = $w('#name').value.trim();
     const email = $w('#email').value.trim();
     const phone = $w('#phoneNumber').value.trim();
+    const destinationAddress=$w('#destinationAddress').value
+    const time=$w('#arrivalTime').value
 
     // ==========================================
     // 2. VALIDATE REQUIRED FIELDS
@@ -635,301 +794,346 @@ $w('#byCard').onChange((event) => {
         // 
         $w('#box14').style.borderColor = "#1E1E1E"
         $w('#box14').style.borderWidth = '1px'
-        $w('#currencygroup').expand()
     } else {
         $w('#box14').style.borderColor = "#FFFFFF"
         $w('#box14').style.borderWidth = '1px'
-        $w('#currencygroup').collapse()
     }
 })
 
 $w('#paymentBtn').onClick(async () => {
 
     try {
-
-        // Get latest booking from session
         const savedBooking = session.getItem("Booking");
 
         if (!savedBooking) {
-
-            console.error("No booking found.");
+            console.error("No booking found in session.");
             return;
         }
 
-        const bookingObj =JSON.parse(savedBooking);
-
+        const bookingObj = JSON.parse(savedBooking);
         BOOKINGOBJ = bookingObj;
-        bookingObj.currency = CURRENTCURRENCY
+        bookingObj.currency = CURRENTCURRENCY;
 
-        // =========================
-        // CREATE PAYMENT
-        // =========================
+        // The backend creates the payment AND saves the pending booking.
+        const payment = await PaymentInitiate(bookingObj);
 
-        const payment =await PaymentInitiate(bookingObj);
+        if (payment.status !== "Success" || !payment.paymentId) {
+            console.error("Could not initialize payment:", payment);
+            return;
+        }
 
-        // =========================
-        // OPEN PAYMENT WINDOW
-        // =========================
+        console.log("Pending booking saved:", payment.orderNumber);
+        console.log("Wix payment created:", payment.paymentId);
 
-        const paymentResult =await wixPayFrontend.startPayment(payment.id);
+        // Start monitoring BEFORE opening the payment modal.
+        // This runs independently of startPayment resolving.
+        void monitorPaymentStatus(
+            payment.paymentId,
+            payment.orderNumber
+        );
 
-        console.log("Payment result:", paymentResult);
+        const paymentResult = await wixPayFrontend.startPayment(payment.paymentId);
 
-        // =========================
-        // CHECK PAYMENT STATUS
-        // =========================
+        console.log("Payment modal result:", paymentResult);
 
         if (paymentResult.status === "Successful") {
-
-            console.log("Payment successful");
-            const registerResult = await RegisterCustomer({
-                email: bookingObj.email,
-                name: bookingObj.nameSurname
-            });
-
-            if (
-                registerResult.status !== "Success" &&
-                registerResult.status !== "ExistingMember"
-            ) {
-                console.error("Customer registration failed:", registerResult);
-                return;
-            }
-
-            // ========================================
-            // EXISTING CUSTOMER
-            // ========================================
-
-            if (registerResult.isExistingMember) {
-
-                session.setItem("CustomerEmail", registerResult.email);
-                session.setItem("CustomerMemberId", registerResult.memberId);
-
-                // No new password for existing customers
-                session.removeItem("CustomerPassword");
-
-            } else {
-
-                // ========================================
-                // NEW CUSTOMER
-                // ========================================
-
-                session.setItem("CustomerEmail", registerResult.email);
-                session.setItem("CustomerPassword", registerResult.password);
-                session.setItem("CustomerMemberId", registerResult.memberId);
-            }
-
-            // ========================================
-            // SAVE BOOKING
-            // ========================================
-
-            bookingObj.bookedmemberId = registerResult.memberId;
-            bookingObj.paymentId = payment.id
-            bookingObj.paymentDetails = payment
-
-            const save = await SaveBooking(bookingObj);
-
-            if (save.status !== "Success") {
-                console.error("Booking save failed:", save);
-                return;
-            }
-
-            console.log("Booking saved successfully:", save.payload);
-
-            wixLocationFrontend.to(
-                "/thank-you"
+            console.log(
+                "The frontend reports success. Waiting for backend confirmation."
             );
 
-        } else if (paymentResult.status === "Cancelled") {
-
-            console.log("Payment successful");
-
-            console.log("Payment successful");
-
-            let memberId = null;
-
-            // ========================================
-            // 1. CHECK IF CUSTOMER IS LOGGED IN
-            // ========================================
-
-            let loggedInMember = null;
-
-            try {
-                loggedInMember = await currentMember.getMember();
-            } catch (error) {
-                console.log("No logged-in member found:", error);
-            }
-
-            if (loggedInMember?._id || loggedInMember?.id) {
-
-                // ========================================
-                // LOGGED-IN CUSTOMER
-                // ========================================
-
-                memberId = loggedInMember._id || loggedInMember.id;
-
-                session.setItem("CustomerEmail", bookingObj.email);
-                session.setItem("CustomerMemberId", memberId);
-
-                // Do not generate or store a new password
-                session.removeItem("CustomerPassword");
-
-                console.log("Using logged-in member ID:", memberId);
-
-            } else {
-
-                // ========================================
-                // GUEST CUSTOMER: REGISTER OR FIND EXISTING
-                // ========================================
-
-                const registerResult = await RegisterCustomer({
-                    email: bookingObj.email,
-                    name: bookingObj.nameSurname
-                });
-
-                console.log("Registration result:", registerResult);
-
-                if (
-                    registerResult.status !== "Success" &&
-                    registerResult.status !== "ExistingMember"
-                ) {
-                    console.error(
-                        "Customer registration failed:",
-                        registerResult
-                    );
-                    return;
-                }
-
-                if (!registerResult.memberId) {
-                    console.error(
-                        "Customer member ID is missing:",
-                        registerResult
-                    );
-                    return;
-                }
-
-                memberId = registerResult.memberId;
-
-                session.setItem(
-                    "CustomerEmail",
-                    registerResult.email || bookingObj.email
-                );
-
-                session.setItem("CustomerMemberId", memberId);
-
-                if (registerResult.isExistingMember) {
-
-                    // Existing Wix account: reuse its member ID
-                    session.removeItem("CustomerPassword");
-
-                    console.log("Using existing member ID:", memberId);
-
-                } else {
-
-                    // New Wix account: preserve credentials for Thank You page
-                    session.setItem(
-                        "CustomerPassword",
-                        registerResult.password
-                    );
-
-                    console.log("New customer registered:", memberId);
-                }
-            }
-
-            // ========================================
-            // 2. SAVE BOOKING WITH MEMBER ID
-            // ========================================
-
-            bookingObj.bookedmemberId = memberId;
-            bookingObj.paymentId = payment.id;
-            bookingObj.paymentDetails = payment;
-            bookingObj.currency = CURRENTCURRENCY;
-
-            const save = await SaveBooking(bookingObj);
-
-            if (save.status !== "Success") {
-                console.error("Booking save failed:", save);
-                return;
-            }
-
-            console.log("Booking saved successfully:", save.payload);
-
-            // ========================================
-            // 3. REDIRECT TO THANK YOU PAGE
-            // ========================================
-
-            wixLocationFrontend.to("/thank-you");
-
-            // ========================================
-            // REDIRECT TO THANK YOU PAGE
-            // ========================================
-
-            wixLocationFrontend.to("/thank-you");
-
-            // goto thankyou page 
+            // Do not call SaveBooking() here.
+            // The backend payment event confirms and saves the booking.
         } else {
-
             console.log(
-                "Payment was not successful:",
+                "Payment modal closed or did not report success:",
                 paymentResult.status
             );
+
+            // Do not delete the pending booking.
+            // The backend event remains the source of truth.
         }
 
     } catch (error) {
-
-        console.error(
-            "Payment error:",
-            error
-        );
-
+        console.error("Payment flow error:", error);
     }
+
+    // try {
+    //     const savedBooking = session.getItem("Booking");
+
+    //     if (!savedBooking) {
+    //         console.error("No booking found.");
+    //         return;
+    //     }
+
+    //     const bookingObj = JSON.parse(savedBooking);
+    //     BOOKINGOBJ = bookingObj;
+    //     bookingObj.currency = CURRENTCURRENCY;
+
+    //     const payment = await PaymentInitiate(bookingObj);
+    //     const paymentResult = await wixPayFrontend.startPayment(payment.id);
+
+    //     console.log("Payment result:", paymentResult);
+
+    //     if (paymentResult.status === "Successful") {
+
+    //         await processCustomerAndSaveBooking(bookingObj, payment);
+
+    //     } else if (paymentResult.status === "Cancelled") {
+
+    //         // TESTING ONLY: this still saves the booking and redirects
+    //         await processCustomerAndSaveBooking(bookingObj, payment);
+
+    //     } else {
+    //         console.log(
+    //             "Payment was not successful:",
+    //             paymentResult.status
+    //         );
+    //     }
+
+    // } catch (error) {
+    //     console.error("Payment error:", error);
+    // }
+
+    // try {
+
+    //     // Get latest booking from session
+    //     const savedBooking = session.getItem("Booking");
+
+    //     if (!savedBooking) {
+
+    //         console.error("No booking found.");
+    //         return;
+    //     }
+
+    //     const bookingObj =JSON.parse(savedBooking);
+
+    //     BOOKINGOBJ = bookingObj;
+    //     bookingObj.currency = CURRENTCURRENCY
+
+    //     // =========================
+    //     // CREATE PAYMENT
+    //     // =========================
+
+    //     const payment =await PaymentInitiate(bookingObj);
+
+    //     // =========================
+    //     // OPEN PAYMENT WINDOW
+    //     // =========================
+
+    //     const paymentResult =await wixPayFrontend.startPayment(payment.id);
+
+    //     console.log("Payment result:", paymentResult);
+
+    //     // =========================
+    //     // CHECK PAYMENT STATUS
+    //     // =========================
+
+    //     if (paymentResult.status === "Successful") {
+
+    //         console.log("Payment successful");
+    //         const registerResult = await RegisterCustomer({
+    //             email: bookingObj.email,
+    //             name: bookingObj.nameSurname
+    //         });
+
+    //         if (
+    //             registerResult.status !== "Success" &&
+    //             registerResult.status !== "ExistingMember"
+    //         ) {
+    //             console.error("Customer registration failed:", registerResult);
+    //             return;
+    //         }
+
+    //         // ========================================
+    //         // EXISTING CUSTOMER
+    //         // ========================================
+
+    //         if (registerResult.isExistingMember) {
+
+    //             session.setItem("CustomerEmail", registerResult.email);
+    //             session.setItem("CustomerMemberId", registerResult.memberId);
+
+    //             // No new password for existing customers
+    //             session.removeItem("CustomerPassword");
+
+    //         } else {
+
+    //             // ========================================
+    //             // NEW CUSTOMER
+    //             // ========================================
+
+    //             session.setItem("CustomerEmail", registerResult.email);
+    //             session.setItem("CustomerPassword", registerResult.password);
+    //             session.setItem("CustomerMemberId", registerResult.memberId);
+    //         }
+
+    //         // ========================================
+    //         // SAVE BOOKING
+    //         // ========================================
+
+    //         bookingObj.bookedmemberId = registerResult.memberId;
+    //         bookingObj.paymentId = payment.id
+    //         bookingObj.paymentDetails = payment
+
+    //         const save = await SaveBooking(bookingObj);
+
+    //         if (save.status !== "Success") {
+    //             console.error("Booking save failed:", save);
+    //             return;
+    //         }
+
+    //         console.log("Booking saved successfully:", save.payload);
+
+    //         wixLocationFrontend.to(
+    //             "/thank-you"
+    //         );
+
+    //     } else if (paymentResult.status === "Cancelled") {
+
+    //         console.log("Payment successful");
+
+    //         console.log("Payment successful");
+
+    //         let memberId = null;
+
+    //         // ========================================
+    //         // 1. CHECK IF CUSTOMER IS LOGGED IN
+    //         // ========================================
+
+    //         let loggedInMember = null;
+
+    //         try {
+    //             loggedInMember = await currentMember.getMember();
+    //         } catch (error) {
+    //             console.log("No logged-in member found:", error);
+    //         }
+
+    //         if (loggedInMember?._id || loggedInMember?.id) {
+
+    //             // ========================================
+    //             // LOGGED-IN CUSTOMER
+    //             // ========================================
+
+    //             memberId = loggedInMember._id || loggedInMember.id;
+
+    //             session.setItem("CustomerEmail", bookingObj.email);
+    //             session.setItem("CustomerMemberId", memberId);
+
+    //             // Do not generate or store a new password
+    //             session.removeItem("CustomerPassword");
+
+    //             console.log("Using logged-in member ID:", memberId);
+
+    //         } else {
+
+    //             // ========================================
+    //             // GUEST CUSTOMER: REGISTER OR FIND EXISTING
+    //             // ========================================
+
+    //             const registerResult = await RegisterCustomer({
+    //                 email: bookingObj.email,
+    //                 name: bookingObj.nameSurname
+    //             });
+
+    //             console.log("Registration result:", registerResult);
+
+    //             if (
+    //                 registerResult.status !== "Success" &&
+    //                 registerResult.status !== "ExistingMember"
+    //             ) {
+    //                 console.error(
+    //                     "Customer registration failed:",
+    //                     registerResult
+    //                 );
+    //                 return;
+    //             }
+
+    //             if (!registerResult.memberId) {
+    //                 console.error(
+    //                     "Customer member ID is missing:",
+    //                     registerResult
+    //                 );
+    //                 return;
+    //             }
+
+    //             memberId = registerResult.memberId;
+
+    //             session.setItem(
+    //                 "CustomerEmail",
+    //                 registerResult.email || bookingObj.email
+    //             );
+
+    //             session.setItem("CustomerMemberId", memberId);
+
+    //             if (registerResult.isExistingMember) {
+
+    //                 // Existing Wix account: reuse its member ID
+    //                 session.removeItem("CustomerPassword");
+
+    //                 console.log("Using existing member ID:", memberId);
+
+    //             } else {
+
+    //                 // New Wix account: preserve credentials for Thank You page
+    //                 session.setItem(
+    //                     "CustomerPassword",
+    //                     registerResult.password
+    //                 );
+
+    //                 console.log("New customer registered:", memberId);
+    //             }
+    //         }
+
+    //         // ========================================
+    //         // 2. SAVE BOOKING WITH MEMBER ID
+    //         // ========================================
+
+    //         bookingObj.bookedmemberId = memberId;
+    //         bookingObj.paymentId = payment.id;
+    //         bookingObj.paymentDetails = payment;
+    //         bookingObj.currency = CURRENTCURRENCY;
+
+    //         const save = await SaveBooking(bookingObj);
+
+    //         if (save.status !== "Success") {
+    //             console.error("Booking save failed:", save);
+    //             return;
+    //         }
+
+    //         console.log("Booking saved successfully:", save.payload);
+
+    //         // ========================================
+    //         // 3. REDIRECT TO THANK YOU PAGE
+    //         // ========================================
+
+    //         wixLocationFrontend.to("/thank-you");
+
+    //         // ========================================
+    //         // REDIRECT TO THANK YOU PAGE
+    //         // ========================================
+
+    //         wixLocationFrontend.to("/thank-you");
+
+    //         // goto thankyou page 
+    //     } else {
+
+    //         console.log(
+    //             "Payment was not successful:",
+    //             paymentResult.status
+    //         );
+    //     }
+
+    // } catch (error) {
+
+    //     console.error(
+    //         "Payment error:",
+    //         error
+    //     );
+
+    // }
 
 });
 
 $w('#editTransfer').onClick((event) => {
     $w('#statebox8').changeState("BookingForm")
-})
-
-$w('#Eurocheck').onChange((event) => {
-    if ($w('#Eurocheck').checked) {
-
-        // Uncheck USD
-        $w('#dollarcurrency').checked = false;
-
-        // Set currency to EUR
-        CURRENTCURRENCY = "EUR";
-
-    } else {
-        // Keep EUR selected if user tries to uncheck it
-        $w('#Eurocheck').checked = true;
-    }
-
-    console.log("Current Currency:", CURRENTCURRENCY);
-});
-
-$w('#dollarcurrency').onChange((event) => {
-    if ($w('#dollarcurrency').checked) {
-
-        // Uncheck EUR
-        $w('#Eurocheck').checked = false;
-
-        // Set currency to USD
-        CURRENTCURRENCY = "USD";
-
-    } else {
-        // Keep USD selected if user tries to uncheck it
-        $w('#dollarcurrency').checked = true;
-    }
-
-    console.log("Current Currency:", CURRENTCURRENCY);
-});
-
-$w('#box8').onMouseIn((event) => {
-    // formFactor API
-    // $w('#button2').style.backgroundColor = "#B01315"
-
-})
-
-$w('#box12').onClick((event) => {
-    // $w('#button3').style.backgroundColor = "#B01315"
-
 })
