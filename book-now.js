@@ -16,6 +16,7 @@ const WAITING_PRICE = 14;
 const STOP_PRICE = 14;
 const WATER_PRICE = 3; // change this to your actual water price
 let CURRENTCURRENCY = "USD"
+let Intent = ""
 $w.onReady(function () {
 
     PICKUP = session.getItem("Pickup");
@@ -24,6 +25,7 @@ $w.onReady(function () {
     PASSENGERS = session.getItem("Passengers");
     VEHICLENAME = session.getItem("Vehicle");
     VEHICLECAPACITY = Number(session.getItem("Capacity"));
+    Intent = session.getItem("Intent")
     BASEPRICE = Number(session.getItem("BASEPRICE"));
     TOTALPRICE = BASEPRICE;
 
@@ -104,6 +106,12 @@ async function monitorPaymentStatus(paymentId, orderNumber) {
     );
 }
 
+function getEffectiveBasePrice() {
+    const isReturnTrip = $w('#returnTrip').checked;
+    const oneWayPrice = Number(BASEPRICE) || 0;
+
+    return isReturnTrip ? oneWayPrice * 2 : oneWayPrice;
+}
 async function processCustomerAndSaveBooking(bookingObj, payment) {
     try {
         console.log("Processing customer and booking...");
@@ -645,96 +653,157 @@ $w('#petscheckbox').onChange((event) => {
 })
 
 $w('#Continue').onClick(async () => {
-    console.log("In Continue")
+    console.log("In Continue");
 
     // ==========================================
-    // 1. GET REQUIRED CUSTOMER INFORMATION
+    // 1. HELPER: SHOW ERROR AND SCROLL
     // ==========================================
 
-    const name = $w('#name').value.trim();
-    const email = $w('#email').value.trim();
-    const phone = $w('#phoneNumber').value.trim();
-    const destinationAddress=$w('#destinationAddress').value
-    const time=$w('#arrivalTime').value
+    async function showValidationError(message, elementId) {
+        $w('#exceptionMsg').text = message;
+        $w('#exceptionMsg').show();
+
+        // Scroll to the error message first.
+        await $w('#exceptionMsg').scrollTo();
+
+        // Then focus attention on the invalid field.
+        if (elementId) {
+            await $w(elementId).scrollTo();
+        }
+    }
+
+    // Clear the previous error.
+    $w('#exceptionMsg').text = "";
+    $w('#exceptionMsg').hide();
 
     // ==========================================
-    // 2. VALIDATE REQUIRED FIELDS
+    // 2. GET REQUIRED CUSTOMER INFORMATION
+    // ==========================================
+
+    const name = ($w('#name').value || "").trim();
+    const email = ($w('#email').value || "").trim();
+    const phone = ($w('#phoneNumber').value || "").trim();
+
+    // ==========================================
+    // 3. VALIDATE REQUIRED FIELDS
     // ==========================================
 
     if (!name) {
-        $w('#name').scrollTo();
+        await showValidationError(
+            "Please enter your full name.",
+            "#name"
+        );
         return;
     }
 
     if (!email) {
-        $w('#email').scrollTo();
+        await showValidationError(
+            "Please enter your email address.",
+            "#email"
+        );
         return;
     }
 
-    // Validate email format
     const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     if (!emailPattern.test(email)) {
-        $w('#email').scrollTo();
+        await showValidationError(
+            "Please enter a valid email address.",
+            "#email"
+        );
         return;
     }
 
     if (!phone) {
-        $w('#phoneNumber').scrollTo();
+        await showValidationError(
+            "Please enter your phone number.",
+            "#phoneNumber"
+        );
+        return;
+    }
+    // Validate arrival time
+    const time = $w('#arrivalTime').value;
+
+    if (!time) {
+        await showValidationError(
+            "Please select your arrival time.",
+            "#arrivalTime"
+        );
+        return;
+    }
+
+    // Validate destination address
+    const destinationAddress = ($w('#destinationAddress').value || "").trim();
+
+    if (!destinationAddress) {
+        await showValidationError(
+            "Please enter your destination address.",
+            "#destinationAddress"
+        );
         return;
     }
 
     // ==========================================
-    // 3. GET EXTRAS
+    // 4. GET EXTRAS
     // ==========================================
 
     const extrasData = getExtras();
 
     // ==========================================
-    // 4. CALCULATE FINAL PRICE
+    // 5. CALCULATE FINAL PRICE
     // ==========================================
 
     const totalPrice =
         Number(BASEPRICE) + extrasData.totalExtras;
 
-    const orderResult =
-        await GenerateUniqueOrderNumber();
+    let orderResult;
+
+    try {
+        orderResult = await GenerateUniqueOrderNumber();
+    } catch (error) {
+        console.error("Order number generation failed:", error);
+
+        await showValidationError(
+            "We couldn't prepare your booking. Please try again.",
+            "#Continue"
+        );
+        return;
+    }
 
     if (orderResult.status !== "Success") {
-
         console.error(
             "Could not generate order number:",
             orderResult
         );
 
+        await showValidationError(
+            "We couldn't prepare your booking. Please try again.",
+            "#Continue"
+        );
         return;
     }
 
-    const orderNumber =
-        orderResult.orderNumber;
+    const orderNumber = orderResult.orderNumber;
 
     // ==========================================
-    // 5. CREATE BOOKING OBJECT
+    // 6. CREATE BOOKING OBJECT
     // ==========================================
+
     BOOKINGOBJ = {
-
         flightNumber: $w('#flightNumber').value,
 
         pickup: PICKUP,
-
         destination: DESTINATION,
 
         arrivaldate: DATE,
-
         arrivaltime: ARRIVALTIME,
 
         destinationAddresshotel: $w('#destinationAddress').value,
 
         nameSurname: name,
-
         email: email,
-
         phone: phone,
+
         bookedBy: "CUSTOMER",
         orderNumber: orderNumber,
 
@@ -765,14 +834,13 @@ $w('#Continue').onClick(async () => {
         vehicleName: VEHICLENAME,
 
         BASEPRICE: Number(BASEPRICE),
-
         TOTALPRICE: totalPrice,
 
         extrasData: extrasData
     };
 
     // ==========================================
-    // 6. SAVE COMPLETE BOOKING TO SESSION
+    // 7. SAVE COMPLETE BOOKING TO SESSION
     // ==========================================
 
     session.setItem(
@@ -781,12 +849,12 @@ $w('#Continue').onClick(async () => {
     );
 
     // ==========================================
-    // 7. MOVE TO PAYMENT STATE
+    // 8. MOVE TO PAYMENT STATE
     // ==========================================
-    $w('#byCard').scrollTo()
-    // $w('#button1').scrollTo()
-    $w('#statebox8').changeState("PaymentSelection");
 
+    await $w('#byCard').scrollTo();
+
+    await $w('#statebox8').changeState("PaymentSelection");
 });
 
 $w('#byCard').onChange((event) => {
@@ -1136,4 +1204,9 @@ $w('#paymentBtn').onClick(async () => {
 
 $w('#editTransfer').onClick((event) => {
     $w('#statebox8').changeState("BookingForm")
+})
+
+$w('#returnTrip').onChange((event) => {
+
+    console.log($w('#returnTrip').checked, "returnTrip Value")
 })
