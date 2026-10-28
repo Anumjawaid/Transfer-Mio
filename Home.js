@@ -1,59 +1,81 @@
-import { LoadPickupInstant, LoadDestinationInstant, LoadPrices } from 'backend/handler_drop.web.js';
+import {
+    LoadPickupInstant,
+    LoadDestinationInstant,
+    LoadDestinationFirstInstant,
+    LoadPickupByDestinationInstant,
+    LoadPrices
+} from "backend/handler_drop.web.js";
 
 import { session } from "wix-storage-frontend";
-import wixLocationFrontend from 'wix-location-frontend';
+import wixLocationFrontend from "wix-location-frontend";
 
 // ==========================================
-// GLOBAL VARIABLES
+// STATE AND SELECTIONS
 // ==========================================
 
 let Route = "AirportToCity";
-
-let selectedPickup = "";
-let selectedDestination = "";
-
-let pickupSearchRequest = 0;
-let destinationSearchRequest = 0;
-
-let pickupSearchTimer;
-let destinationSearchTimer;
-
+let activeState = "State1";
 let isSubmitting = false;
 
+const searchData = {
+    State1: {
+        pickup: "",
+        destination: "",
+        pickupRequest: 0,
+        destinationRequest: 0,
+        pickupTimer: null,
+        destinationTimer: null
+    },
+    State2: {
+        pickup: "",
+        destination: "",
+        pickupRequest: 0,
+        destinationRequest: 0,
+        pickupTimer: null,
+        destinationTimer: null
+    }
+};
+
 // ==========================================
-// HELPER FUNCTIONS
+// ELEMENT IDS
 // ==========================================
 
-// Converts backend results to string arrays
-function normalizeLocations(result, key) {
+function getIds(state) {
+    const suffix = state === "State2" ? "2" : "";
 
-    const data = Array.isArray(result) ?
-        result :
-        Array.isArray(result?.payload) ?
-        result.payload : [];
+    return {
+        pickupInput: `#pickupSearch${suffix}`,
+        pickupRepeater: `#pickupRepeater${suffix}`,
+        pickupText: `#pickupResultTxt${suffix}`,
+
+        destinationInput: `#destinationSearch${suffix}`,
+        destinationRepeater: `#destinationRepeater${suffix}`,
+        destinationText: `#destinationResultTxt${suffix}`
+    };
+}
+
+// ==========================================
+// HELPERS
+// ==========================================
+
+function getLocations(response, field) {
+    const items = Array.isArray(response) ?
+        response :
+        Array.isArray(response?.payload) ?
+        response.payload : [];
 
     return [...new Set(
-        data.map(item => {
-
+        items.map(item => {
             if (typeof item === "string") {
                 return item.trim();
             }
 
-            return String(
-                item?.[key] ||
-                item?.name ||
-                item?.label ||
-                ""
-            ).trim();
-
+            return String(item?.[field] || "").trim();
         }).filter(Boolean)
     )];
 }
 
-// Generate a stable repeater ID for each location.
-// This hash is deterministic for the same string.
 function makeLocationId(name) {
-
     let hash = 2166136261;
 
     for (const char of String(name)) {
@@ -64,269 +86,376 @@ function makeLocationId(name) {
     return "loc" + (hash >>> 0).toString(36);
 }
 
-// Create repeater data with unique IDs
-function createRepeaterData(locations) {
+function sortLocations(locations, query) {
+    const search = query.toLowerCase();
 
-    return locations.map(name => ({
-        _id: makeLocationId(name),
-        name
-    }));
+    return locations.sort((a, b) => {
+        const aStarts = a.toLowerCase().startsWith(search);
+        const bStarts = b.toLowerCase().startsWith(search);
+
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+
+        return a.localeCompare(b);
+    });
 }
 
-// ==========================================
-// ERROR MESSAGES
-// ==========================================
-
-function showBookingError(message) {
-
+function showError(message) {
     $w("#exception").text = message;
     $w("#exception").show();
 }
 
-function clearBookingError() {
-
+function clearError() {
     $w("#exception").text = "";
     $w("#exception").hide();
 }
 
-// ==========================================
-// RESET SEARCH RESULTS
-// ==========================================
-
-function clearPickupResults() {
-
-    $w("#pickupRepeater").data = [];
-    $w("#pickupRepeater").collapse();
+function clearRepeater(repeaterId) {
+    $w(repeaterId).data = [];
+    $w(repeaterId).collapse();
 }
 
-function clearDestinationResults() {
+function renderResults(state, type, locations) {
+    const ids = getIds(state);
+    const repeaterId = type === "pickup" ?
+        ids.pickupRepeater :
+        ids.destinationRepeater;
 
-    $w("#destinationRepeater").data = [];
-    $w("#destinationRepeater").collapse();
+    const textId = type === "pickup" ?
+        ids.pickupText :
+        ids.destinationText;
+
+    const data = locations.map(name => ({
+        _id: makeLocationId(name),
+        name
+    }));
+
+    $w(repeaterId).data = data;
+
+    // Update text on existing repeater items.
+    $w(repeaterId).forEachItem(($item, itemData) => {
+        $item(textId).text = itemData.name;
+    });
+
+    if (data.length) {
+        $w(repeaterId).expand();
+    } else {
+        $w(repeaterId).collapse();
+    }
+}
+
+function invalidateSearch(state, type) {
+    const data = searchData[state];
+
+    if (type === "pickup") {
+        data.pickupRequest++;
+        clearTimeout(data.pickupTimer);
+    } else {
+        data.destinationRequest++;
+        clearTimeout(data.destinationTimer);
+    }
 }
 
 // ==========================================
-// RESET DESTINATION
+// RESET DEPENDENT FIELD
 // ==========================================
 
-function resetDestination() {
+function resetDestination(state) {
+    const data = searchData[state];
+    const ids = getIds(state);
 
-    selectedDestination = "";
+    data.destination = "";
 
-    destinationSearchRequest++;
+    invalidateSearch(state, "destination");
 
-    clearTimeout(destinationSearchTimer);
+    $w(ids.destinationInput).value = "";
+    clearRepeater(ids.destinationRepeater);
+}
 
-    $w("#destinationSearch").value = "";
+function resetPickup(state) {
+    const data = searchData[state];
+    const ids = getIds(state);
 
-    clearDestinationResults();
+    data.pickup = "";
+
+    invalidateSearch(state, "pickup");
+
+    $w(ids.pickupInput).value = "";
+    clearRepeater(ids.pickupRepeater);
 }
 
 // ==========================================
-// SEARCH PICKUPS FROM CMS
+// SEARCH PICKUP
+// State1: search any pickup
+// State2: search pickup for selected destination
 // ==========================================
 
-async function searchPickups(searchText) {
+async function searchPickup(state, query) {
+    const data = searchData[state];
+    const ids = getIds(state);
 
-    const requestId = ++pickupSearchRequest;
+    const requestId = ++data.pickupRequest;
+    const search = String(query || "").trim();
 
-    const query = String(searchText || "").trim();
+    if (search.length < 2) {
+        clearRepeater(ids.pickupRepeater);
+        return;
+    }
 
-    if (query.length < 2) {
-
-        clearPickupResults();
+    if (state === "State2" && !data.destination) {
+        clearRepeater(ids.pickupRepeater);
         return;
     }
 
     try {
+        let response;
 
-        const response = await LoadPickupInstant(query);
-
-        // Ignore responses from older searches
-        if (requestId !== pickupSearchRequest) {
-            return;
+        if (state === "State1") {
+            response = await LoadPickupInstant(search);
+        } else {
+            response = await LoadPickupByDestinationInstant(
+                data.destination,
+                search
+            );
         }
 
-        const locations = normalizeLocations(
+        if (requestId !== data.pickupRequest) return;
+
+        const locations = getLocations(
             response,
             "pickUpLocation"
         );
 
-        // Prioritize locations beginning with the query
-        const sortedLocations = locations.sort((a, b) => {
-
-            const search = query.toLowerCase();
-
-            const aStarts = a.toLowerCase().startsWith(search);
-            const bStarts = b.toLowerCase().startsWith(search);
-
-            if (aStarts && !bStarts) return -1;
-            if (!aStarts && bStarts) return 1;
-
-            return a.localeCompare(b);
-        });
-
-        const repeaterData = createRepeaterData(
-            sortedLocations
+        renderResults(
+            state,
+            "pickup",
+            sortLocations(locations, search)
         );
-
-        $w("#pickupRepeater").data = repeaterData;
-
-        // Update existing repeater items too
-        $w("#pickupRepeater").forEachItem(
-            ($item, itemData) => {
-
-                $item("#pickupResultTxt").text =
-                    itemData.name;
-            }
-        );
-
-        if (repeaterData.length > 0) {
-
-            $w("#pickupRepeater").expand();
-
-        } else {
-
-            clearPickupResults();
-        }
 
     } catch (error) {
-
-        if (requestId !== pickupSearchRequest) return;
+        if (requestId !== data.pickupRequest) return;
 
         console.error("Pickup search error:", error);
+        clearRepeater(ids.pickupRepeater);
 
-        clearPickupResults();
-
-        showBookingError(
-            "Unable to search pickup locations. Please try again."
-        );
+        showError("Unable to search pickup locations. Please try again.");
     }
 }
 
 // ==========================================
-// SEARCH DESTINATIONS FROM CMS
+// SEARCH DESTINATION
+// State1: based on selected pickup
+// State2: search all destinations first
 // ==========================================
 
-async function searchDestinations(searchText) {
+async function searchDestination(state, query) {
+    const data = searchData[state];
+    const ids = getIds(state);
 
-    const requestId = ++destinationSearchRequest;
+    const requestId = ++data.destinationRequest;
+    const search = String(query || "").trim();
 
-    const query = String(searchText || "").trim();
-
-    if (!selectedPickup || query.length < 2) {
-
-        clearDestinationResults();
+    if (search.length < 2) {
+        clearRepeater(ids.destinationRepeater);
         return;
     }
 
-    const pickupAtRequest = selectedPickup;
+    if (state === "State1" && !data.pickup) {
+        clearRepeater(ids.destinationRepeater);
+        return;
+    }
 
     try {
+        let response;
 
-        const response = await LoadDestinationInstant(
-            pickupAtRequest,
-            query
-        );
-
-        // Prevent stale results
-        if (
-            requestId !== destinationSearchRequest ||
-            pickupAtRequest !== selectedPickup
-        ) {
-            return;
+        if (state === "State1") {
+            response = await LoadDestinationInstant(
+                data.pickup,
+                search
+            );
+        } else {
+            response = await LoadDestinationFirstInstant(search);
         }
 
-        const locations = normalizeLocations(
+        if (requestId !== data.destinationRequest) return;
+
+        const locations = getLocations(
             response,
             "destination"
         );
 
-        const sortedLocations = locations.sort((a, b) => {
-
-            const search = query.toLowerCase();
-
-            const aStarts = a.toLowerCase().startsWith(search);
-            const bStarts = b.toLowerCase().startsWith(search);
-
-            if (aStarts && !bStarts) return -1;
-            if (!aStarts && bStarts) return 1;
-
-            return a.localeCompare(b);
-        });
-
-        const repeaterData = createRepeaterData(
-            sortedLocations
+        renderResults(
+            state,
+            "destination",
+            sortLocations(locations, search)
         );
-
-        $w("#destinationRepeater").data = repeaterData;
-
-        $w("#destinationRepeater").forEachItem(
-            ($item, itemData) => {
-
-                $item("#destinationResultTxt").text =
-                    itemData.name;
-            }
-        );
-
-        if (repeaterData.length > 0) {
-
-            $w("#destinationRepeater").expand();
-
-        } else {
-
-            clearDestinationResults();
-        }
 
     } catch (error) {
-
-        if (requestId !== destinationSearchRequest) return;
+        if (requestId !== data.destinationRequest) return;
 
         console.error("Destination search error:", error);
+        clearRepeater(ids.destinationRepeater);
 
-        clearDestinationResults();
-
-        showBookingError(
-            "Unable to search destinations. Please try again."
-        );
+        showError("Unable to search destinations. Please try again.");
     }
 }
 
 // ==========================================
-// VALIDATE SELECTED LOCATIONS
+// REGISTER PICKUP REPEATER
 // ==========================================
 
-function validateLocations() {
+function registerPickupRepeater(state) {
+    const data = searchData[state];
+    const ids = getIds(state);
+
+    $w(ids.pickupRepeater).onItemReady(($item, itemData) => {
+        $item(ids.pickupText).text = itemData.name;
+
+        $item(ids.pickupText).onClick(() => {
+            invalidateSearch(state, "pickup");
+
+            data.pickup = itemData.name;
+            $w(ids.pickupInput).value = itemData.name;
+
+            clearRepeater(ids.pickupRepeater);
+
+            // State1 selects pickup first, so reset destination.
+            if (state === "State1") {
+                resetDestination(state);
+            }
+
+            clearError();
+
+            console.log(state, "Selected pickup:", data.pickup);
+        });
+    });
+}
+
+// ==========================================
+// REGISTER DESTINATION REPEATER
+// ==========================================
+
+function registerDestinationRepeater(state) {
+    const data = searchData[state];
+    const ids = getIds(state);
+
+    $w(ids.destinationRepeater).onItemReady(($item, itemData) => {
+        $item(ids.destinationText).text = itemData.name;
+
+        $item(ids.destinationText).onClick(() => {
+            invalidateSearch(state, "destination");
+
+            data.destination = itemData.name;
+            $w(ids.destinationInput).value = itemData.name;
+
+            clearRepeater(ids.destinationRepeater);
+
+            // State2 selects destination first, so reset pickup.
+            if (state === "State2") {
+                resetPickup(state);
+            }
+
+            clearError();
+
+            console.log(
+                state,
+                "Selected destination:",
+                data.destination
+            );
+        });
+    });
+}
+
+// ==========================================
+// REGISTER INPUTS
+// ==========================================
+
+function registerInputs(state) {
+    const data = searchData[state];
+    const ids = getIds(state);
+
+    // PICKUP INPUT
+    $w(ids.pickupInput).onInput(event => {
+        const query = event.target.value;
+
+        data.pickup = "";
+
+        invalidateSearch(state, "pickup");
+        clearRepeater(ids.pickupRepeater);
+        clearError();
+
+        // In State1, changing pickup resets destination.
+        // In State2, destination must be selected first.
+        if (state === "State1") {
+            resetDestination(state);
+        } else if (!data.destination) {
+            showError("Please select a destination first.");
+            return;
+        }
+
+        if (String(query || "").trim().length < 2) return;
+
+        data.pickupTimer = setTimeout(() => {
+            searchPickup(state, query);
+        }, 300);
+    });
+
+    // DESTINATION INPUT
+    $w(ids.destinationInput).onInput(event => {
+        const query = event.target.value;
+
+        data.destination = "";
+
+        invalidateSearch(state, "destination");
+        clearRepeater(ids.destinationRepeater);
+        clearError();
+
+        // In State1, pickup must be selected first.
+        // In State2, destination is selected first.
+        if (state === "State1" && !data.pickup) {
+            showError("Please select a pickup location first.");
+            return;
+        }
+
+        // In State2, changing destination resets pickup.
+        if (state === "State2") {
+            resetPickup(state);
+        }
+
+        if (String(query || "").trim().length < 2) return;
+
+        data.destinationTimer = setTimeout(() => {
+            searchDestination(state, query);
+        }, 300);
+    });
+}
+
+// ==========================================
+// VALIDATE ACTIVE STATE
+// ==========================================
+
+function validateLocations(state) {
+    const data = searchData[state];
+    const ids = getIds(state);
 
     const pickupInput = String(
-        $w("#pickupSearch").value || ""
+        $w(ids.pickupInput).value || ""
     ).trim();
 
     const destinationInput = String(
-        $w("#destinationSearch").value || ""
+        $w(ids.destinationInput).value || ""
     ).trim();
 
-    if (
-        !selectedPickup ||
-        pickupInput !== selectedPickup
-    ) {
-
-        showBookingError(
-            "Please select a valid pickup location from the suggestions."
-        );
-
+    if (!data.pickup || pickupInput !== data.pickup) {
+        showError("Please select a valid pickup from the suggestions.");
         return false;
     }
 
     if (
-        !selectedDestination ||
-        destinationInput !== selectedDestination
+        !data.destination ||
+        destinationInput !== data.destination
     ) {
-
-        showBookingError(
-            "Please select a valid destination from the suggestions."
-        );
-
+        showError("Please select a valid destination from the suggestions.");
         return false;
     }
 
@@ -334,386 +463,109 @@ function validateLocations() {
 }
 
 // ==========================================
+// CONTINUE BOOKING
+// ==========================================
+
+async function continueBooking() {
+    if (isSubmitting) return;
+
+    const state = activeState;
+    const data = searchData[state];
+
+    isSubmitting = true;
+    $w("#bookNow").disable();
+    clearError();
+
+    try {
+        if (!validateLocations(state)) return;
+
+        // CMS field order stays pickup then destination,
+        // even when the customer searched in reverse order.
+        const rates = await LoadPrices(
+            data.pickup,
+            data.destination
+        );
+
+        console.log("Route:", Route);
+        console.log("Pickup:", data.pickup);
+        console.log("Destination:", data.destination);
+        console.log("Rates:", rates);
+
+        if (
+            !rates ||
+            (Array.isArray(rates) && rates.length === 0)
+        ) {
+            showError("No available rates found for this route.");
+            return;
+        }
+
+        session.setItem("Pickup", data.pickup);
+        session.setItem("Destination", data.destination);
+        session.setItem("Route", Route);
+
+        session.setItem(
+            "Date",
+            String($w("#datePicker1").value)
+        );
+
+        session.setItem(
+            "Passengers",
+            $w("#passengers").value
+        );
+
+        session.setItem(
+            "RatesWindow",
+            JSON.stringify(rates)
+        );
+
+        wixLocationFrontend.to("/route-vehicle");
+
+    } catch (error) {
+        console.error("Continue booking error:", error);
+
+        showError("Something went wrong. Please try again.");
+    } finally {
+        isSubmitting = false;
+        $w("#bookNow").enable();
+    }
+}
+
+// ==========================================
 // PAGE READY
 // ==========================================
 
 $w.onReady(function () {
+    clearError();
 
-    // Hide errors and results initially
-    clearBookingError();
+    ["State1", "State2"].forEach(state => {
+        const ids = getIds(state);
 
-    clearPickupResults();
-    clearDestinationResults();
+        clearRepeater(ids.pickupRepeater);
+        clearRepeater(ids.destinationRepeater);
 
-    // ======================================
-    // PICKUP REPEATER
-    // ======================================
-
-    $w("#pickupRepeater").onItemReady(
-        ($item, itemData) => {
-
-            $item("#pickupResultTxt").text =
-                itemData.name;
-
-            $item("#pickupResultTxt").onClick(() => {
-
-                // Cancel pending searches
-                pickupSearchRequest++;
-                clearTimeout(pickupSearchTimer);
-
-                selectedPickup = itemData.name;
-
-                $w("#pickupSearch").value =
-                    itemData.name;
-
-                clearPickupResults();
-
-                // Changing pickup invalidates destination
-                resetDestination();
-
-                clearBookingError();
-
-                console.log(
-                    "Selected pickup:",
-                    selectedPickup
-                );
-            });
-        }
-    );
-     $w("#pickupRepeater2").onItemReady(
-        ($item, itemData) => {
-
-            $item("#pickupResultTxt2").text =
-                itemData.name;
-
-            $item("#pickupResultTxt2").onClick(() => {
-
-                // Cancel pending searches
-                pickupSearchRequest++;
-                clearTimeout(pickupSearchTimer);
-
-                selectedPickup = itemData.name;
-
-                $w("#pickupSearch2").value =
-                    itemData.name;
-
-                clearPickupResults();
-
-                // Changing pickup invalidates destination
-                resetDestination();
-
-                clearBookingError();
-
-                console.log(
-                    "Selected pickup:",
-                    selectedPickup
-                );
-            });
-        }
-    );
-
-    // ======================================
-    // DESTINATION REPEATER
-    // ======================================
-
-    $w("#destinationRepeater").onItemReady(
-        ($item, itemData) => {
-
-            $item("#destinationResultTxt").text =
-                itemData.name;
-
-            $item("#destinationResultTxt").onClick(() => {
-
-                destinationSearchRequest++;
-                clearTimeout(destinationSearchTimer);
-
-                selectedDestination = itemData.name;
-
-                $w("#destinationSearch").value =
-                    itemData.name;
-
-                clearDestinationResults();
-
-                clearBookingError();
-
-                console.log(
-                    "Selected destination:",
-                    selectedDestination
-                );
-            });
-        }
-    );
-      $w("#destinationRepeater2").onItemReady(
-        ($item, itemData) => {
-
-            $item("#destinationResultTxt2").text =
-                itemData.name;
-
-            $item("#destinationResultTxt2").onClick(() => {
-
-                destinationSearchRequest++;
-                clearTimeout(destinationSearchTimer);
-
-                selectedDestination = itemData.name;
-
-                $w("#destinationSearch2").value =
-                    itemData.name;
-
-                clearDestinationResults();
-
-                clearBookingError();
-
-                console.log(
-                    "Selected destination:",
-                    selectedDestination
-                );
-            });
-        }
-    );
-
-    // ======================================
-    // PICKUP INPUT
-    // ======================================
-
-    $w("#pickupSearch").onInput(event => {
-
-        const query = event.target.value;
-
-        // Invalidate previously selected pickup
-        selectedPickup = "";
-
-        // Clear destination when pickup changes
-        resetDestination();
-
-        clearBookingError();
-        clearPickupResults();
-
-        pickupSearchRequest++;
-
-        clearTimeout(pickupSearchTimer);
-
-        if (String(query).trim().length < 2) {
-            return;
-        }
-
-        // Debounce backend search
-        pickupSearchTimer = setTimeout(() => {
-
-            searchPickups(query);
-
-        }, 300);
-    });
-    $w("#pickupSearch2").onInput(event => {
-
-        const query = event.target.value;
-
-        // Invalidate previously selected pickup
-        selectedPickup = "";
-
-        // Clear destination when pickup changes
-        resetDestination();
-
-        clearBookingError();
-        clearPickupResults();
-
-        pickupSearchRequest++;
-
-        clearTimeout(pickupSearchTimer);
-
-        if (String(query).trim().length < 2) {
-            return;
-        }
-
-        // Debounce backend search
-        pickupSearchTimer = setTimeout(() => {
-
-            searchPickups(query);
-
-        }, 300);
+        registerPickupRepeater(state);
+        registerDestinationRepeater(state);
+        registerInputs(state);
     });
 
-    // ======================================
-    // DESTINATION INPUT
-    // ======================================
-
-    $w("#destinationSearch").onInput(event => {
-
-        const query = event.target.value;
-
-        selectedDestination = "";
-
-        clearBookingError();
-        clearDestinationResults();
-
-        destinationSearchRequest++;
-
-        clearTimeout(destinationSearchTimer);
-
-        if (!selectedPickup) {
-
-            showBookingError(
-                "Please select a pickup location first."
-            );
-
-            return;
-        }
-
-        if (String(query).trim().length < 2) {
-            return;
-        }
-
-        destinationSearchTimer = setTimeout(() => {
-
-            searchDestinations(query);
-
-        }, 300);
-    });
-    $w("#destinationSearch2").onInput(event => {
-
-        const query = event.target.value;
-
-        selectedDestination = "";
-
-        clearBookingError();
-        clearDestinationResults();
-
-        destinationSearchRequest++;
-
-        clearTimeout(destinationSearchTimer);
-
-        if (!selectedPickup) {
-
-            showBookingError(
-                "Please select a pickup location first."
-            );
-
-            return;
-        }
-
-        if (String(query).trim().length < 2) {
-            return;
-        }
-
-        destinationSearchTimer = setTimeout(() => {
-
-            searchDestinations(query);
-
-        }, 300);
-    });
-
-    // ======================================
-    // CONTINUE BUTTON
-    // ======================================
-
-    $w('#bookNow').onClick(async (event) => {
-        console.log(isSubmitting, "in onclick")
-        if (isSubmitting) return;
-
-        isSubmitting = true;
-        console.log(isSubmitting, "in 2ndonclick")
-        $w("#bookNow").disable();
-
-        clearBookingError();
-
-        try {
-
-            // Validate pickup and destination
-            if (!validateLocations()) {
-                return;
-            }
-
-            // ==================================
-            // LOAD ROUTE PRICES
-            // ==================================
-
-            const rates = await LoadPrices(
-                selectedPickup,
-                selectedDestination
-            );
-
-            console.log("Loaded rates:", rates);
-
-            if (
-                !rates ||
-                (Array.isArray(rates) && rates.length === 0)
-            ) {
-
-                showBookingError(
-                    "No available vehicles or rates found for this route."
-                );
-
-                return;
-            }
-
-            // ==================================
-            // SAVE BOOKING SESSION
-            // ==================================
-
-            session.setItem(
-                "Pickup",
-                selectedPickup
-            );
-
-            session.setItem(
-                "Destination",
-                selectedDestination
-            );
-
-            session.setItem(
-                "Date",
-                String($w("#datePicker1").value)
-            );
-
-            session.setItem(
-                "Passengers",
-                $w("#passengers").value
-            );
-
-            session.setItem(
-                "RatesWindow",
-                JSON.stringify(rates)
-            );
-
-            console.log(
-                "Booking session saved successfully."
-            );
-
-            // ==================================
-            // NAVIGATE TO VEHICLE PAGE
-            // ==================================
-
-            wixLocationFrontend.to("/route-vehicle");
-
-        } catch (error) {
-
-            console.error(
-                "Booking continuation error:",
-                error
-            );
-
-            showBookingError(
-                "Something went wrong. Please try again."
-            );
-
-        } finally {
-
-            isSubmitting = false;
-
-            $w("#bookNow").enable();
-        }
-    });
-})
-
-$w('#state2change').onClick((event) => {
-    $w("#statebox8").changeState("State1");
-
+});
+// Existing button switches to State1
+$w("#state2change").onClick(() => {
+    activeState = "State1";
     Route = "AirportToCity";
 
-})
-
-$w("#statechange1").onClick(() => {
-
-    $w("#statebox8").changeState("State2");
-
-    Route = "CityToAirport";
+    clearError();
+    $w("#statebox8").changeState("State1");
 });
+
+// Existing button switches to State2
+$w("#statechange1").onClick(() => {
+    activeState = "State2";
+    Route = "CityToAirport";
+
+    clearError();
+    $w("#statebox8").changeState("State2");
+});
+
+// Shared Continue button
+$w("#bookNow").onClick(continueBooking);
